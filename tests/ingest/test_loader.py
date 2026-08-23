@@ -4,6 +4,10 @@ from nostro.ingest.loader import IngestError, load_csv
 from nostro.models import Source
 
 BANK_HEADER = "txn_id,value_date,narration,debit,credit,balance\n"
+RAZORPAY_HEADER = (
+    "payment_id,order_id,settlement_id,cycle,captured_at,settled_at,"
+    "gross_amount,fee,gst,net_amount,entity_type\n"
+)
 
 
 def _write(tmp_path: Path, name: str, text: str) -> Path:
@@ -55,3 +59,29 @@ def test_extra_unknown_column_is_tolerated(tmp_path: Path):
 def test_missing_file_raises(tmp_path: Path):
     with pytest.raises(IngestError):
         load_csv(tmp_path / "nope.csv", Source.BANK)
+
+
+def test_blank_gross_amount_on_razorpay_row_is_quarantined(tmp_path: Path):
+    p = _write(tmp_path, "r.csv", RAZORPAY_HEADER
+               + "pay_1,ord_1,set_1,C1,2026-06-01,2026-06-03,,5.00,2.00,93.00,merchant\n")
+    result = load_csv(p, Source.RAZORPAY)
+    assert result.rows == []
+    assert len(result.quarantined) == 1
+    assert result.quarantined[0].line_no == 2
+
+
+def test_blank_debit_on_bank_credit_row_still_loads_as_zero(tmp_path: Path):
+    p = _write(tmp_path, "b.csv", BANK_HEADER + "bk_1,2026-06-03,NEFT CR,,50.00,\n")
+    result = load_csv(p, Source.BANK)
+    assert len(result.rows) == 1
+    assert result.rows[0].debit_paise == 0
+    assert result.rows[0].credit_paise == 5000
+    assert result.quarantined == []
+
+
+def test_blank_payment_id_on_razorpay_row_is_quarantined(tmp_path: Path):
+    p = _write(tmp_path, "r.csv", RAZORPAY_HEADER
+               + ",ord_1,set_1,C1,2026-06-01,2026-06-03,100.00,5.00,2.00,93.00,merchant\n")
+    result = load_csv(p, Source.RAZORPAY)
+    assert result.rows == []
+    assert len(result.quarantined) == 1
