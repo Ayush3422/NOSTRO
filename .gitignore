@@ -6,3 +6,6 @@ node_modules/
 .next/
 *.duckdb
 .superpowers/
+
+# user-supplied reference screenshots, not part of the submission
+*.png
