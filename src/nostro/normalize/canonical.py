@@ -68,7 +68,16 @@ class CanonicalSet(BaseModel):
     erp: list[CanonicalRow] = []
 
     def by_id(self) -> dict[str, CanonicalRow]:
-        return {r.row_id: r for r in (*self.razorpay, *self.bank, *self.erp)}
+        index: dict[str, CanonicalRow] = {}
+        for row in (*self.razorpay, *self.bank, *self.erp):
+            existing = index.get(row.row_id)
+            if existing is not None:
+                raise ValueError(
+                    f"row_id collision on {row.row_id!r}: "
+                    f"{existing.source.value} and {row.source.value} both claim it"
+                )
+            index[row.row_id] = row
+        return index
 
     @property
     def total_rows(self) -> int:
