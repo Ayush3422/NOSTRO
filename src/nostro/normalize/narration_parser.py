@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from nostro.models import ParsedBy
 
 _UTR = re.compile(r"\b(UTR[0-9A-Z]{6,20})\b", re.IGNORECASE)
+_UTR_SQUEEZED = re.compile(r"(UTR\d{6,20})", re.IGNORECASE)
 _RRN = re.compile(r"\b(RRN[0-9]{4,16})\b", re.IGNORECASE)
 _LOOSE_UTR = re.compile(r"\b([0-9]{12,22})\b")
 
@@ -54,9 +55,11 @@ class NarrationParser:
 
         utr_match = _UTR.search(text)
         if utr_match is None:
-            # Corrupted narration often collapses spacing; retry on a squeezed copy.
+            # Corrupted narration often collapses spacing; retry on a squeezed
+            # copy with a digits-only body, since word-boundary assertions
+            # cannot fire inside one continuous run of word characters.
             squeezed = re.sub(r"[^0-9A-Za-z]", "", text)
-            utr_match = _UTR.search(squeezed)
+            utr_match = _UTR_SQUEEZED.search(squeezed)
 
         if utr_match:
             self.stats["regex_hits"] += 1
@@ -81,13 +84,8 @@ class NarrationParser:
                 # A model outage must degrade the close, never stop it.
                 result = None
             if result is not None:
-                self.stats["regex_hits"] += 0
                 return result.model_copy(update={"parsed_by": ParsedBy.LLM})
 
         self.stats["misses"] += 1
         return ParsedNarration(kind=_classify(text), parsed_by=ParsedBy.NONE,
                                confidence=0.0)
-
-
-def parser_stats(parser: NarrationParser) -> dict[str, int]:
-    return dict(parser.stats)

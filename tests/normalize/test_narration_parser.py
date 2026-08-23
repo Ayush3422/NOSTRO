@@ -58,6 +58,17 @@ def test_failing_llm_fallback_degrades_gracefully():
     assert out.utr is None
 
 
+def test_squeezed_retry_recovers_utr_when_strict_match_fails():
+    # A space-collapsed SBI narration: "REF" glues onto "UTR..." with no word
+    # boundary between them, and "...0001" glues onto the trailing "CR", so
+    # the strict \b-anchored pattern cannot match at all. The squeezed retry
+    # (digits-only body, no boundary requirement) must still recover the UTR.
+    p = NarrationParser()
+    out = p.parse("TRANSFERFROMRAZORPAYREFUTR2608260001CR")
+    assert out.utr == "UTR2608260001"
+    assert out.parsed_by is ParsedBy.REGEX
+
+
 def test_stats_track_ladder_versus_model():
     p = NarrationParser()
     p.parse("NEFT/UTR1234567890/RAZORPAYSOFTWAREPVTLTD/SETTLE")
