@@ -37,7 +37,11 @@ from nostro.normalize.canonical import CanonicalSet
 
 class SolverConfig(BaseModel):
     max_subset_size: int = 6
-    max_candidates: int = 40
+    # 15 is a measured choice, not a guess: swept {12,15,20,25} on data/full with the
+    # per-cycle grouping in place and took the best-F1 value among those that stayed
+    # well under the ~30s wall-clock budget (all four did). See task-10-report.md,
+    # "Fix round 3" for the full sweep table.
+    max_candidates: int = 15
     residual_tolerance_paise: int = 100
     date_window_days: int = 3
     bank_residual_tolerance_paise: int = 2
