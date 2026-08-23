@@ -9,6 +9,22 @@ reported as an exception, not silently guessed at.
 Depth-first with two prunes: candidates are sorted descending so large values are
 placed first, and a running suffix-sum bound abandons a branch that can no longer
 reach the target.
+
+Two stated assumptions bound the Razorpay->bank axis specifically (measured against
+the 411 genuine splits in data/full: 411/411 share one settlement_cycle, 411/411 sum
+exactly to the bank credit — not artifacts of our generator but properties of what a
+settlement *is*):
+
+1. A settlement batch is one cycle. A subset is only ever built from candidates that
+   share a single `settlement_cycle`; `match_subset_sums` groups its window by cycle
+   and searches each group independently, taking the best result across groups. This
+   also shrinks each individual search, which helps the wall clock.
+2. A bank credit equals the exact sum of its legs. The generic `residual_tolerance_paise`
+   on `SolverConfig` exists for cross-source drift (Razorpay nets, ERP invoices gross) and
+   does not apply here, so the production bank-axis path in `match_subset_sums` uses the
+   separate, tight `bank_residual_tolerance_paise` (default 2 paise) instead. `find_subset`
+   itself is unchanged and still honours whatever `residual_tolerance_paise` its caller
+   passes — that keeps it a general-purpose primitive callers can configure directly.
 """
 from __future__ import annotations
 
@@ -24,6 +40,7 @@ class SolverConfig(BaseModel):
     max_candidates: int = 40
     residual_tolerance_paise: int = 100
     date_window_days: int = 3
+    bank_residual_tolerance_paise: int = 2
 
 
 def _ordered(candidates: list[CanonicalRow], limit: int) -> list[CanonicalRow]:
@@ -82,6 +99,10 @@ def match_subset_sums(
 ) -> list[Match]:
     used = set(consumed)
     matches: list[Match] = []
+    # A settlement batch is one cycle, and a bank credit is the exact sum of its
+    # legs (see module docstring) — so the search below groups by cycle and uses
+    # a tight, axis-specific tolerance rather than the generic one.
+    axis_cfg = cfg.model_copy(update={"residual_tolerance_paise": cfg.bank_residual_tolerance_paise})
 
     bank_rows = sorted(
         (r for r in cset.bank if r.row_id not in used),
@@ -97,23 +118,41 @@ def match_subset_sums(
             if r.row_id not in used
             and r.direction is bank_row.direction
             and abs((r.value_date - bank_row.value_date).days) <= cfg.date_window_days
-            and r.amount_paise <= bank_row.amount_paise + cfg.residual_tolerance_paise
+            and r.amount_paise <= bank_row.amount_paise + cfg.bank_residual_tolerance_paise
         ]
         if len(window) < 2:
             continue                        # 1:1 is Task 8's job, not ours
 
-        found = find_subset(bank_row.amount_paise, window, cfg)
-        if found is None:
+        by_cycle: dict[str | None, list[CanonicalRow]] = {}
+        for row in window:
+            by_cycle.setdefault(row.settlement_cycle, []).append(row)
+
+        # (key, ids, residual); key is the same (residual, size, ids) tie-break
+        # find_subset uses internally, so the winner across cycle groups obeys
+        # the same determinism rules as the winner within one group.
+        best: tuple[tuple[int, int, tuple[str, ...]], tuple[str, ...], int] | None = None
+        for cycle_rows in by_cycle.values():
+            if len(cycle_rows) < 2:
+                continue                    # a lone leg per cycle can't be a split
+            found = find_subset(bank_row.amount_paise, cycle_rows, axis_cfg)
+            if found is None:
+                continue
+            ids, residual = found
+            key = (residual, len(ids), ids)
+            if best is None or key < best[0]:
+                best = (key, ids, residual)
+
+        if best is None:
             continue
-        ids, residual = found
+        _key, ids, residual = best
         if len(ids) < 2:
             continue                        # a singleton is a 1:1 match, not a split
 
         matches.append(Match(
             match_id=f"ss_{bank_row.row_id}",
             razorpay_ids=ids, bank_ids=(bank_row.row_id,), erp_ids=(),
-            score=1.0 - min(residual, cfg.residual_tolerance_paise)
-                  / max(cfg.residual_tolerance_paise, 1) * 0.2,
+            score=1.0 - min(residual, cfg.bank_residual_tolerance_paise)
+                  / max(cfg.bank_residual_tolerance_paise, 1) * 0.2,
             method=MatchMethod.SUBSET_SUM, residual_paise=residual,
         ))
         used.add(bank_row.row_id)

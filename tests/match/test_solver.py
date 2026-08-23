@@ -6,9 +6,10 @@ from nostro.models import CanonicalRow, Direction, MatchMethod, Source
 from nostro.normalize.canonical import CanonicalSet
 
 
-def _row(rid, src, amount, day=3):
+def _row(rid, src, amount, day=3, cycle=None):
     return CanonicalRow(source=src, row_id=rid, amount_paise=amount,
-                        direction=Direction.CREDIT, value_date=date(2026, 6, day))
+                        direction=Direction.CREDIT, value_date=date(2026, 6, day),
+                        settlement_cycle=cycle)
 
 
 def test_finds_an_exact_three_way_split():
@@ -58,7 +59,8 @@ def test_is_deterministic_across_input_orderings():
 
 def test_end_to_end_split_is_matched_and_typed():
     cset = CanonicalSet(
-        razorpay=[_row("pay_1", Source.RAZORPAY, 3000), _row("pay_2", Source.RAZORPAY, 2000)],
+        razorpay=[_row("pay_1", Source.RAZORPAY, 3000, cycle="cyc_1"),
+                  _row("pay_2", Source.RAZORPAY, 2000, cycle="cyc_1")],
         bank=[_row("bk_1", Source.BANK, 5000)],
     )
     blocks = build_blocks(cset, BlockingConfig())
@@ -66,6 +68,19 @@ def test_end_to_end_split_is_matched_and_typed():
     assert len(matches) == 1
     assert matches[0].method is MatchMethod.SUBSET_SUM
     assert matches[0].pairs() == {("bk_1", "pay_1"), ("bk_1", "pay_2")}
+
+
+def test_a_subset_spanning_two_settlement_cycles_is_refused():
+    # pay_1 (cyc_1) + pay_2 (cyc_2) sum EXACTLY to bk_1, but a settlement batch is
+    # one cycle — a subset that mixes cycles must never be proposed, even when the
+    # amounts line up perfectly. That is the whole point of the cycle constraint.
+    cset = CanonicalSet(
+        razorpay=[_row("pay_1", Source.RAZORPAY, 3000, cycle="cyc_1"),
+                  _row("pay_2", Source.RAZORPAY, 2000, cycle="cyc_2")],
+        bank=[_row("bk_1", Source.BANK, 5000)],
+    )
+    blocks = build_blocks(cset, BlockingConfig())
+    assert match_subset_sums(cset, blocks, consumed=set(), cfg=SolverConfig()) == []
 
 
 def test_already_consumed_rows_are_never_reused():
