@@ -291,10 +291,20 @@ def run_close(cfg: CloseConfig, client=None) -> CloseResult:
         holdout_razorpay_match_rate = None
     report = evaluate(eval_matches, eval_links, eval_cset, elapsed) if eval_links else None
     if report is not None:
+        # Never write the whole-population match_rate into the permanent record
+        # when it is the biased holdout figure (see CloseResult's docstring on
+        # holdout_razorpay_match_rate): an audit trail may legitimately show
+        # history, but it should not be handed a number we've already disowned.
+        # evaluation_mode records which regime produced these figures, the same
+        # distinction the API surfaces.
+        evaluation_mode = "holdout" if holdout_razorpay_match_rate is not None else "in_sample"
         ledger.append("evaluated", {
             "precision": report.precision, "recall": report.recall, "f1": report.f1,
-            "holdout_razorpay_match_rate": holdout_razorpay_match_rate,
-            "match_rate": report.match_rate,
+            "evaluation_mode": evaluation_mode,
+            "match_rate": (
+                holdout_razorpay_match_rate if evaluation_mode == "holdout"
+                else report.match_rate
+            ),
         })
 
     return CloseResult(

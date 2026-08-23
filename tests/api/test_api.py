@@ -88,6 +88,19 @@ def test_drill_down_on_an_unknown_row_is_a_404(client):
     assert client.get("/api/close/row/does_not_exist").status_code == 404
 
 
+def test_drill_down_probability_agrees_with_the_matches_endpoint(client):
+    # Match.probability defaults to 0.0 on the model; the real calibrated value
+    # lives in the parallel result.probabilities list. /matches injects it
+    # correctly -- this test pins /row to do the same, so the two endpoints
+    # never disagree about a match's confidence (a wrong confidence on the
+    # drill-down screen is worse than showing none at all).
+    listed = client.get("/api/close/matches?limit=1").json()["items"][0]
+    row_id = (listed["razorpay_ids"] + listed["bank_ids"] + listed["erp_ids"])[0]
+    body = client.get(f"/api/close/row/{row_id}").json()
+    assert body["match"]["match_id"] == listed["match_id"]
+    assert body["match"]["probability"] == listed["probability"]
+
+
 def test_threshold_returns_the_curve(client):
     body = client.get("/api/close/threshold").json()
     assert "tau" in body

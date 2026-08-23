@@ -140,12 +140,23 @@ def build_app(
         found = cset.by_id().get(row_id)
         if found is None:
             raise HTTPException(status_code=404, detail=f"unknown row {row_id}")
-        match = next(
-            (m for m in result.matches
+        match_index = next(
+            (i for i, m in enumerate(result.matches)
              if row_id in (*m.razorpay_ids, *m.bank_ids, *m.erp_ids)), None)
+        match = result.matches[match_index] if match_index is not None else None
         item = next((e for e in result.exceptions if row_id in e.row_ids), None)
         siblings = []
+        match_payload = None
         if match is not None:
+            # `Match.probability` defaults to 0.0 and is never populated by
+            # run_close -- the real calibrated value lives in the parallel
+            # `result.probabilities` list, aligned by index to `result.matches`.
+            # Inject it the same way `matches()` does, so the two endpoints
+            # never disagree about a match's confidence.
+            match_payload = {
+                **match.model_dump(mode="json"),
+                "probability": result.probabilities[match_index],
+            }
             index = cset.by_id()
             siblings = [
                 index[rid].model_dump(mode="json")
@@ -154,7 +165,7 @@ def build_app(
             ]
         return {
             "row": found.model_dump(mode="json"),
-            "match": match.model_dump(mode="json") if match else None,
+            "match": match_payload,
             "exception": item.model_dump(mode="json") if item else None,
             "siblings": siblings,
         }
