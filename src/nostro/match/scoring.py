@@ -55,11 +55,27 @@ def extract_features(match: Match, blocks: Blocks) -> MatchFeatures:
 
 
 def raw_score(features: MatchFeatures) -> float:
-    """Monotone in evidence strength. Never leaves [0, 1]."""
+    """Monotone in evidence strength. Never leaves [0, 1].
+
+    `residual_paise` is deflected through `abs()`: its sign carries no evidence
+    (callers are expected to report a magnitude, but nothing enforces that at
+    the type level), only its size does, and an unguarded negative value below
+    -10 would drive `1 + residual/10` to zero or negative and blow up the
+    division. `date_gap_days` and `subset_size` have no equivalent exposure —
+    `date_gap_days` comes from a `max - min` over dates so it cannot be
+    negative, and `subset_size` is built via `max(len(...), 1)` so it cannot be
+    less than 1 — but both are still routed through `abs()`/a floor here so the
+    function stays safe even if a future caller constructs `MatchFeatures`
+    directly rather than through `extract_features`.
+    """
+    residual = abs(features.residual_paise)
+    date_gap = max(features.date_gap_days, 0)
+    subset_size = max(abs(features.subset_size), 1)
+
     score = 0.35 * (features.method_rank / 3)
-    score += 0.25 / (1 + features.residual_paise / 10)
-    score += 0.15 / (1 + features.date_gap_days)
-    score += 0.10 / features.subset_size
+    score += 0.25 / (1 + residual / 10)
+    score += 0.15 / (1 + date_gap)
+    score += 0.10 / subset_size
     score += 0.10 if features.has_ref_link else 0.0
     score += 0.05 if features.narration_parsed else 0.0
     return max(0.0, min(1.0, score))

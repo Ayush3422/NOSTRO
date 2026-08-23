@@ -1,8 +1,15 @@
 """Isotonic calibration of match scores.
 
 Isotonic rather than Platt scaling because the score-to-truth relationship is
-monotone but not sigmoid, and isotonic makes no shape assumption. Fitted on the
-training cycles only; every reported number comes from the held-out cycles.
+monotone but not sigmoid, and isotonic makes no shape assumption.
+
+Usage contract for callers, not a guarantee this module enforces: `fit` must
+only see scores and labels from the training cycles, and every Brier score or
+reliability figure reported downstream must come from predictions on the
+held-out cycles. Nothing in `Calibrator` itself performs or checks that split
+— the split is a later task's responsibility — so a caller that fits and
+evaluates on the same data will get a number back without any warning that it
+is optimistic.
 """
 from __future__ import annotations
 

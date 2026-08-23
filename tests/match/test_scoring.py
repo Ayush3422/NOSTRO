@@ -1,7 +1,7 @@
 from datetime import date
 
 from nostro.match.blocking import BlockingConfig, build_blocks
-from nostro.match.scoring import _METHOD_RANK, extract_features, raw_score
+from nostro.match.scoring import _METHOD_RANK, MatchFeatures, extract_features, raw_score
 from nostro.models import CanonicalRow, Direction, Match, MatchMethod, Source
 from nostro.normalize.canonical import CanonicalSet
 
@@ -68,3 +68,13 @@ def test_reference_match_does_not_crash_extract_features():
               score=0.0, method=MatchMethod.REFERENCE, residual_paise=0)
     f = extract_features(m, _blocks(rows))
     assert f.method_rank == 3
+
+
+def test_negative_residual_does_not_crash_and_stays_a_probability():
+    # residual_paise == -10 makes `1 + residual/10` zero, which would blow up
+    # an unguarded division; residual's sign carries no evidence, only its
+    # magnitude does.
+    f = MatchFeatures(residual_paise=-10, date_gap_days=0, subset_size=1,
+                       has_ref_link=False, method_rank=3, narration_parsed=False)
+    s = raw_score(f)
+    assert 0.0 <= s <= 1.0
