@@ -3,7 +3,9 @@
 Three passes, strongest evidence first, each consuming rows the later passes
 may no longer touch:
 
-  1. reference identity  — same order_id across Razorpay and ERP
+  1. reference identity  — same order_id across Razorpay and ERP (MatchMethod.REFERENCE;
+                            the residual here is fee+GST, not amount-match evidence,
+                            since Razorpay canonicalises on net and ERP on gross)
   2. exact               — same amount, within the date window
   3. tolerance            — amount within tolerance, within the date window
 
@@ -62,9 +64,10 @@ def match_deterministic(
             continue
         for rid in sorted(blocks.by_order.get(order, ())):
             other = index[rid]
-            if rid in result.consumed or other.source is not Source.ERP:
+            if (rid in result.consumed or other.source is not Source.ERP
+                    or other.direction is not row.direction):
                 continue
-            emit(row.row_id, rid, MatchMethod.EXACT,
+            emit(row.row_id, rid, MatchMethod.REFERENCE,
                  abs(row.amount_paise - other.amount_paise))
             break
 

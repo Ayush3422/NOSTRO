@@ -26,6 +26,7 @@ class ParsedBy(str, Enum):
 
 
 class MatchMethod(str, Enum):
+    REFERENCE = "reference"
     EXACT = "exact"
     TOLERANCE = "tolerance"
     SUBSET_SUM = "subset_sum"

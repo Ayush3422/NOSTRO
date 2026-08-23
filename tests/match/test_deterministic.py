@@ -67,9 +67,35 @@ def test_opposite_directions_never_match():
 
 
 def test_erp_matches_by_order_id():
+    # Razorpay canonicalises on net, ERP on gross, so a genuine order-id match
+    # routinely carries a residual of exactly fee+GST. That is not amount
+    # evidence, so it must be labelled REFERENCE, not EXACT, and the residual
+    # is expected and informative rather than an error.
     cset = CanonicalSet(
         razorpay=[_row("pay_1", Source.RAZORPAY, 97640, 3, {"order_id": "o1"})],
         erp=[_row("inv_1", Source.ERP, 100000, 1, {"order_id": "o1"})],
     )
     result = _run(cset)
-    assert any(m.pairs() == {("inv_1", "pay_1")} for m in result.matches)
+    matches = [m for m in result.matches if m.pairs() == {("inv_1", "pay_1")}]
+    assert len(matches) == 1
+    assert matches[0].method is MatchMethod.REFERENCE
+    assert matches[0].residual_paise == 2360
+
+
+def test_reference_pass_respects_direction():
+    # Refunds and chargebacks inherit the original payment's order_id, so a
+    # Razorpay DEBIT (a chargeback) can share an order_id block with the
+    # payment's ERP invoice CREDIT. cb_1 sorts before pay_1, so under
+    # row-id-sorted iteration without a direction filter the chargeback would
+    # reach the block first and wrongly claim the invoice.
+    debit = CanonicalRow(source=Source.RAZORPAY, row_id="cb_1", amount_paise=97640,
+                         direction=Direction.DEBIT, value_date=date(2026, 6, 3),
+                         refs={"order_id": "o1"})
+    credit = _row("pay_1", Source.RAZORPAY, 97640, 3, {"order_id": "o1"})
+    invoice = _row("inv_1", Source.ERP, 100000, 1, {"order_id": "o1"})
+    cset = CanonicalSet(razorpay=[debit, credit], erp=[invoice])
+    result = _run(cset)
+    matches = [m for m in result.matches if "inv_1" in m.erp_ids]
+    assert len(matches) == 1
+    assert matches[0].pairs() == {("inv_1", "pay_1")}
+    assert "cb_1" not in result.consumed

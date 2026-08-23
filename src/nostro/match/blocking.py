@@ -18,7 +18,6 @@ from nostro.normalize.canonical import CanonicalSet
 class BlockingConfig(BaseModel):
     date_window_days: int = 3
     amount_tolerance_paise: int = 100
-    amount_bucket_paise: int = 100
 
 
 def amount_date_key(amount_paise: int, value_date: date) -> str:
