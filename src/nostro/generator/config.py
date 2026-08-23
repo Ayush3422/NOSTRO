@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 class GeneratorConfig(BaseModel):
     seed: int = 20260823
     cycles: int = 30
-    payments_per_cycle: int = 60
+    payments_per_cycle: int = 75
 
     fee_bps: int = 200          # 2.00% platform fee
     gst_bps: int = 1800         # 18% GST on the fee
