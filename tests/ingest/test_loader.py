@@ -85,3 +85,17 @@ def test_blank_payment_id_on_razorpay_row_is_quarantined(tmp_path: Path):
     result = load_csv(p, Source.RAZORPAY)
     assert result.rows == []
     assert len(result.quarantined) == 1
+
+
+def test_blank_cycle_on_razorpay_row_is_quarantined(tmp_path: Path):
+    # Task 5 ruled that blank identifiers (payment_id, order_id) quarantine
+    # rather than coerce. cycle was left out of that ruling even though it is
+    # just as load-bearing now: the subset-sum solver groups candidates by
+    # settlement_cycle, so a blank cycle pooling under one group key would
+    # silently defeat the single-cycle constraint. Same defect class, same fix.
+    p = _write(tmp_path, "r.csv", RAZORPAY_HEADER
+               + "pay_1,ord_1,set_1,,2026-06-01,2026-06-03,100.00,5.00,2.00,93.00,merchant\n")
+    result = load_csv(p, Source.RAZORPAY)
+    assert result.rows == []
+    assert len(result.quarantined) == 1
+    assert result.quarantined[0].line_no == 2

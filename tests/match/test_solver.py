@@ -102,3 +102,37 @@ def test_debits_and_credits_are_never_mixed_in_one_subset():
     )
     blocks = build_blocks(cset, BlockingConfig())
     assert match_subset_sums(cset, blocks, consumed=set(), cfg=SolverConfig()) == []
+
+
+def test_bank_axis_uses_the_tight_tolerance_not_the_generic_one():
+    # A subset off by 50 paise is well within the generic residual_tolerance_paise
+    # (100) but outside the bank axis's own bank_residual_tolerance_paise (2). This
+    # is the integration point a regression (e.g. passing cfg instead of axis_cfg
+    # into find_subset, or using cfg.residual_tolerance_paise in the window filter)
+    # would silently break without this test — every other match_subset_sums
+    # fixture sums to an exact 0 residual and can't tell the two tolerances apart.
+    cands = [_row("pay_1", Source.RAZORPAY, 3000, cycle="cyc_1"),
+             _row("pay_2", Source.RAZORPAY, 2050, cycle="cyc_1")]
+
+    # Confirm the 50-paise residual really would have been accepted under the old,
+    # generic 100-paise tolerance -- otherwise this test wouldn't discriminate.
+    found_under_old_tolerance = find_subset(5000, cands, SolverConfig(residual_tolerance_paise=100))
+    assert found_under_old_tolerance is not None
+    assert found_under_old_tolerance[1] == 50
+
+    cset = CanonicalSet(razorpay=cands, bank=[_row("bk_1", Source.BANK, 5000)])
+    blocks = build_blocks(cset, BlockingConfig())
+    assert match_subset_sums(cset, blocks, consumed=set(), cfg=SolverConfig()) == []
+
+
+def test_bank_axis_accepts_a_subset_within_the_tight_tolerance():
+    # Companion boundary case: 1 paise off is within bank_residual_tolerance_paise
+    # (default 2), so it must be accepted, making the boundary explicit.
+    cands = [_row("pay_1", Source.RAZORPAY, 3000, cycle="cyc_1"),
+             _row("pay_2", Source.RAZORPAY, 2001, cycle="cyc_1")]
+    cset = CanonicalSet(razorpay=cands, bank=[_row("bk_1", Source.BANK, 5000)])
+    blocks = build_blocks(cset, BlockingConfig())
+    matches = match_subset_sums(cset, blocks, consumed=set(), cfg=SolverConfig())
+    assert len(matches) == 1
+    assert matches[0].residual_paise == 1
+    assert matches[0].pairs() == {("bk_1", "pay_1"), ("bk_1", "pay_2")}

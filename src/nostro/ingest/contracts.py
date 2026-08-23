@@ -50,7 +50,7 @@ class RazorpaySettlementRow(BaseModel):
     net_paise: int
     entity_type: str
 
-    @field_validator("payment_id", "order_id")
+    @field_validator("payment_id", "order_id", "cycle")
     @classmethod
     def _not_blank_id(cls, v: str) -> str:
         return _not_blank(v)
