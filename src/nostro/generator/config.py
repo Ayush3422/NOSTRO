@@ -17,7 +17,6 @@ class GeneratorConfig(BaseModel):
 
     # --- chaos injectors, all on by default ---
     split_settlement_rate: float = Field(0.35, ge=0.0, le=1.0)
-    merged_credit_rate: float = Field(0.10, ge=0.0, le=1.0)
     refund_rate: float = Field(0.08, ge=0.0, le=1.0)
     netted_refund_rate: float = Field(0.50, ge=0.0, le=1.0)
     chargeback_rate: float = Field(0.02, ge=0.0, le=1.0)

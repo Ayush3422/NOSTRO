@@ -1,8 +1,10 @@
+import csv
 import json
 from pathlib import Path
 
 from nostro.generator.config import GeneratorConfig
 from nostro.generator.engine import generate
+from nostro.money import rupees_to_paise
 
 
 def _small(**kw) -> GeneratorConfig:
@@ -48,7 +50,7 @@ def test_split_settlements_actually_occur(tmp_path: Path):
 def test_clean_config_produces_only_one_to_one_bank_links(tmp_path: Path):
     clean = GeneratorConfig(
         cycles=4, payments_per_cycle=8,
-        split_settlement_rate=0.0, merged_credit_rate=0.0, refund_rate=0.0,
+        split_settlement_rate=0.0, refund_rate=0.0,
         chargeback_rate=0.0, duplicate_utr_rate=0.0, narration_corruption_rate=0.0,
         late_credit_rate=0.0, rounding_drift_rate=0.0, missing_row_rate=0.0,
     )
@@ -63,3 +65,30 @@ def test_duplicate_utrs_are_injected_when_enabled(tmp_path: Path):
     ds = generate(_small(duplicate_utr_rate=1.0), tmp_path)
     narrations = [ln.split(",")[2] for ln in ds.bank_csv.read_text().splitlines()[1:]]
     assert len(narrations) != len(set(narrations))
+
+
+def test_linked_credit_equals_the_sum_of_its_linked_payments(tmp_path: Path):
+    """A regression that sums the wrong subset of a split settlement, or writes
+    the wrong total, would still pass every shape-only assertion above. This
+    checks the actual numbers agree between the bank credit and the payments
+    its ground-truth link claims were rolled into it."""
+    ds = generate(_small(split_settlement_rate=1.0), tmp_path)
+    links = json.loads(ds.ground_truth_json.read_text())
+
+    with ds.bank_csv.open(newline="", encoding="utf-8") as fh:
+        bank_by_id = {row["txn_id"]: row for row in csv.DictReader(fh)}
+    with ds.razorpay_csv.open(newline="", encoding="utf-8") as fh:
+        rp_by_id = {row["payment_id"]: row for row in csv.DictReader(fh)}
+
+    split_links = [
+        ln for ln in links if len(ln["razorpay_ids"]) > 1 and ln["bank_ids"]
+    ]
+    assert split_links, "expected at least one genuine multi-payment split link"
+
+    for link in split_links:
+        bank_row = bank_by_id[link["bank_ids"][0]]
+        credit_paise = rupees_to_paise(bank_row["credit"])
+        expected_paise = sum(
+            rupees_to_paise(rp_by_id[pid]["net_amount"]) for pid in link["razorpay_ids"]
+        )
+        assert credit_paise == expected_paise
