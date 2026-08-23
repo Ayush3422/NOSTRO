@@ -22,14 +22,16 @@ def rupees_to_paise(value: str | Decimal) -> int:
     """Convert a rupee amount to integer paise. Never rounds."""
     if isinstance(value, Decimal):
         dec = value
-    else:
-        cleaned = _STRIP.sub("", str(value))
+    elif isinstance(value, str):
+        cleaned = _STRIP.sub("", value)
         if not cleaned:
             raise MoneyParseError(f"empty amount: {value!r}")
         try:
             dec = Decimal(cleaned)
         except InvalidOperation as exc:
             raise MoneyParseError(f"not a rupee amount: {value!r}") from exc
+    else:
+        raise MoneyParseError(f"expected str or Decimal, got {type(value).__name__}: {value!r}")
 
     shifted = dec * 100
     if shifted != shifted.to_integral_value():

@@ -31,3 +31,9 @@ def test_paise_back_to_rupees_is_exact():
 def test_garbage_raises():
     with pytest.raises(MoneyParseError):
         rupees_to_paise("N/A")
+
+
+def test_float_input_is_rejected():
+    """Float input must raise error, never silently convert via str()."""
+    with pytest.raises(MoneyParseError):
+        rupees_to_paise(10.5)
