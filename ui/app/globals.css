@@ -1,0 +1,25 @@
+:root { --bg:#0b0d10; --panel:#14181d; --line:#242a31; --fg:#e6e9ec; --muted:#8b959f; --ok:#3ddc97; --warn:#ffb454; --bad:#ff6b6b; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif, system-ui, sans-serif; }
+nav { display:flex; gap:1.25rem; align-items:center; padding:1rem 1.5rem; border-bottom:1px solid var(--line); }
+nav a { color:var(--muted); text-decoration:none; }
+nav a:hover { color:var(--fg); }
+main { padding:1.5rem; max-width:1100px; margin:0 auto; }
+h1 { font-size:1.35rem; margin:0 0 1.25rem; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:1rem; margin-bottom:1.5rem; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:1rem; }
+.card .label { color:var(--muted); font-size:.75rem; text-transform:uppercase; letter-spacing:.05em; }
+.card .value { font-size:1.6rem; font-weight:600; margin-top:.35rem; font-variant-numeric:tabular-nums; }
+table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+th, td { text-align:left; padding:.6rem .75rem; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
+th { color:var(--muted); font-size:.75rem; text-transform:uppercase; letter-spacing:.05em; }
+tr:last-child td { border-bottom:none; }
+a.row { color:var(--ok); text-decoration:none; }
+.badge { display:inline-block; padding:.15rem .5rem; border-radius:999px; font-size:.7rem; border:1px solid var(--line); color:var(--muted); }
+.warn { color:var(--warn); }
+.bad { color:var(--bad); }
+.mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.8rem; color:var(--muted); word-break:break-all; }
+.table-wrap { overflow-x:auto; }
+.mode-badge { display:inline-block; padding:.25rem .65rem; border-radius:6px; font-size:.75rem; font-weight:600; text-transform:uppercase; letter-spacing:.05em; margin-left:.75rem; vertical-align:middle; }
+.mode-holdout { background:rgba(61,220,151,.12); color:var(--ok); border:1px solid var(--ok); }
+.mode-in_sample { background:rgba(255,180,84,.12); color:var(--warn); border:1px solid var(--warn); }
