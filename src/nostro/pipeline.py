@@ -65,6 +65,57 @@ class CloseResult(BaseModel):
     degraded: list[str]
 
 
+def _restrict_to_holdout(
+    matches: list[Match], cset: CanonicalSet, holdout_cycles: tuple[str, ...]
+) -> tuple[list[Match], CanonicalSet]:
+    """Restrict predictions and rows to the holdout population, together.
+
+    Precision, recall, and match_rate are only meaningful when the predicted
+    set and the truth set are drawn from the same population. Filters
+    `matches` to those whose Razorpay leg's settlement_cycle falls in
+    `holdout_cycles`, and builds a `CanonicalSet` containing exactly the
+    holdout Razorpay rows plus the bank/ERP rows those filtered matches
+    touch -- not the full dataset, which would silently reintroduce the same
+    mismatch on the row-based metrics.
+
+    Every match in this system carries a Razorpay leg (matching is always
+    Razorpay<->bank or Razorpay<->ERP), so this filter is expected to
+    partition matches cleanly by cycle rather than drop some to neither
+    side. That is checked, not assumed: a match with no Razorpay leg raises,
+    because it would mean this invariant no longer holds.
+    """
+    wanted = set(holdout_cycles)
+    cycle_of = {r.row_id: r.settlement_cycle for r in cset.razorpay}
+
+    missing_leg = [m.match_id for m in matches if not m.razorpay_ids]
+    if missing_leg:
+        raise AssertionError(
+            "every match is expected to carry a Razorpay leg (matching is "
+            "always Razorpay<->bank or Razorpay<->ERP); found matches "
+            f"without one, so the holdout population split cannot be "
+            f"trusted: {missing_leg[:5]}"
+        )
+
+    eval_matches = [
+        m for m in matches
+        if any(cycle_of.get(rid) in wanted for rid in m.razorpay_ids)
+    ]
+
+    holdout_razorpay_ids = {rid for rid, cyc in cycle_of.items() if cyc in wanted}
+    touched_bank_ids: set[str] = set()
+    touched_erp_ids: set[str] = set()
+    for m in eval_matches:
+        touched_bank_ids.update(m.bank_ids)
+        touched_erp_ids.update(m.erp_ids)
+
+    eval_cset = CanonicalSet(
+        razorpay=[r for r in cset.razorpay if r.row_id in holdout_razorpay_ids],
+        bank=[r for r in cset.bank if r.row_id in touched_bank_ids],
+        erp=[r for r in cset.erp if r.row_id in touched_erp_ids],
+    )
+    return eval_matches, eval_cset
+
+
 def run_close(cfg: CloseConfig, client=None) -> CloseResult:
     started = perf_counter()
     degraded: list[str] = []
@@ -152,12 +203,22 @@ def run_close(cfg: CloseConfig, client=None) -> CloseResult:
     # Report on holdout links whenever the config declares holdout cycles at
     # all; fall back to reporting on every link, explicitly, only when it
     # doesn't (there is no held-out/train distinction to make in that case).
+    #
+    # A held-out evaluation must restrict BOTH sides to the same population:
+    # comparing the FULL match list (mostly train-cycle predictions) against
+    # holdout-ONLY truth counts every correct train-cycle match as a false
+    # positive, because it can never appear in holdout truth by construction.
+    # That is a population mismatch, not a measurement of anything -- so
+    # `_restrict_to_holdout` filters predictions to the holdout population
+    # too before `evaluate` ever sees them.
     elapsed = perf_counter() - started
     if cfg.holdout_cycles:
+        eval_matches, eval_cset = _restrict_to_holdout(matches, cset, cfg.holdout_cycles)
         eval_links = holdout_links
     else:
+        eval_matches, eval_cset = matches, cset
         eval_links = links      # explicit fallback: no holdout split configured
-    report = evaluate(matches, eval_links, cset, elapsed) if eval_links else None
+    report = evaluate(eval_matches, eval_links, eval_cset, elapsed) if eval_links else None
     if report is not None:
         ledger.append("evaluated", {
             "precision": report.precision, "recall": report.recall,

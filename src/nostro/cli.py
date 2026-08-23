@@ -94,7 +94,11 @@ def replay_cmd(
 ) -> None:
     """Re-run the close and confirm it reproduces the recorded result hash."""
     original = Ledger(audit).result_hash()
-    replayed = run_close(CloseConfig(data_dir=data, audit_path=audit.with_suffix(".replay"),
+    replay_path = audit.with_suffix(".replay")
+    if replay_path.exists():
+        replay_path.unlink()      # start from a clean ledger every run, not
+                                   # an append onto whatever a prior replay left
+    replayed = run_close(CloseConfig(data_dir=data, audit_path=replay_path,
                                      holdout_cycles=_load_holdout_cycles(data),
                                      use_model=False)).result_hash
     typer.echo(f"original {original}")

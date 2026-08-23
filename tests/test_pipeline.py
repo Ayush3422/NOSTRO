@@ -111,3 +111,95 @@ def test_holdout_report_differs_in_kind_from_all_links_report(tmp_path: Path):
     # The holdout report covers strictly fewer true pairs than the all-links
     # (fallback) report, since holdout is a proper subset of all links.
     assert with_holdout.report.true_pairs <= without_holdout.report.true_pairs
+
+
+def test_holdout_restriction_keeps_predictions_and_truth_in_one_population():
+    """The invariant Ruling R2 omitted: whatever `evaluate` is given as
+    predictions in holdout mode must be drawn from the same cycle population
+    as the truth it is graded against, or precision measures a population
+    mismatch instead of anything real."""
+    from datetime import date
+
+    from nostro.models import CanonicalRow, Direction, Match, MatchMethod, Source
+    from nostro.normalize.canonical import CanonicalSet
+    from nostro.pipeline import _restrict_to_holdout
+
+    def row(rid, src, cycle=None):
+        return CanonicalRow(source=src, row_id=rid, amount_paise=100,
+                            direction=Direction.CREDIT, value_date=date(2026, 6, 1),
+                            settlement_cycle=cycle)
+
+    cset = CanonicalSet(
+        razorpay=[row("pay_1", Source.RAZORPAY, "C1"),   # train
+                  row("pay_2", Source.RAZORPAY, "C2"),   # holdout
+                  row("pay_3", Source.RAZORPAY, "C2")],  # holdout
+        bank=[row("bk_1", Source.BANK), row("bk_2", Source.BANK),
+              row("bk_3", Source.BANK)],
+    )
+    train_match = Match(match_id="m1", razorpay_ids=("pay_1",), bank_ids=("bk_1",),
+                        score=1.0, method=MatchMethod.EXACT)
+    holdout_match_a = Match(match_id="m2", razorpay_ids=("pay_2",), bank_ids=("bk_2",),
+                            score=1.0, method=MatchMethod.EXACT)
+    holdout_match_b = Match(match_id="m3", razorpay_ids=("pay_3",), bank_ids=("bk_3",),
+                            score=1.0, method=MatchMethod.EXACT)
+    matches = [train_match, holdout_match_a, holdout_match_b]
+
+    eval_matches, eval_cset = _restrict_to_holdout(matches, cset, ("C2",))
+
+    # Every predicted match kept is drawn from the holdout cycle -- the
+    # train-cycle match must not survive the filter.
+    kept_ids = {m.match_id for m in eval_matches}
+    assert kept_ids == {"m2", "m3"}
+    cycle_of = {r.row_id: r.settlement_cycle for r in cset.razorpay}
+    for m in eval_matches:
+        assert all(cycle_of[rid] == "C2" for rid in m.razorpay_ids)
+
+    # Row population matches too: only the holdout Razorpay rows, and only
+    # the bank rows the *holdout* matches actually touched.
+    assert {r.row_id for r in eval_cset.razorpay} == {"pay_2", "pay_3"}
+    assert {r.row_id for r in eval_cset.bank} == {"bk_2", "bk_3"}
+
+
+def test_restrict_to_holdout_raises_if_a_match_has_no_razorpay_leg():
+    """Every match in this system is Razorpay<->bank or Razorpay<->ERP. If
+    that ever stops being true, fail loudly rather than silently mis-split."""
+    from datetime import date
+
+    from nostro.models import CanonicalRow, Direction, Match, MatchMethod, Source
+    from nostro.normalize.canonical import CanonicalSet
+    from nostro.pipeline import _restrict_to_holdout
+
+    cset = CanonicalSet(
+        razorpay=[CanonicalRow(source=Source.RAZORPAY, row_id="pay_1",
+                               amount_paise=100, direction=Direction.CREDIT,
+                               value_date=date(2026, 6, 1), settlement_cycle="C1")],
+        bank=[], erp=[],
+    )
+    bad_match = Match(match_id="orphan", razorpay_ids=(), bank_ids=(),
+                      erp_ids=(), score=1.0, method=MatchMethod.EXACT)
+    try:
+        _restrict_to_holdout([bad_match], cset, ("C1",))
+        assert False, "expected an AssertionError"
+    except AssertionError as exc:
+        assert "orphan" in str(exc)
+
+
+def test_holdout_precision_recovers_near_in_sample_once_populations_match(tmp_path: Path):
+    """The regression this whole fix is about: with the predicted and truth
+    populations aligned, held-out precision should land in the same
+    neighbourhood as the in-sample figure, not collapse from a mismatch."""
+    ds = _dataset(tmp_path)
+    holdout = run_close(CloseConfig(
+        data_dir=ds.razorpay_csv.parent, audit_path=tmp_path / "ho.jsonl",
+        holdout_cycles=ds.holdout_cycles, use_model=False,
+    ))
+    in_sample = run_close(CloseConfig(
+        data_dir=ds.razorpay_csv.parent, audit_path=tmp_path / "is.jsonl",
+        holdout_cycles=(), use_model=False,
+    ))
+    assert holdout.report is not None
+    assert in_sample.report is not None
+    # Not a strict equality -- different cycles, different exact figures --
+    # but a population-matched holdout precision should not be wildly below
+    # the in-sample number the way the mismatched version was (0.30 vs 0.99).
+    assert holdout.report.precision >= in_sample.report.precision - 0.25
