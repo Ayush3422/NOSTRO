@@ -43,3 +43,15 @@ def test_no_data_falls_back_to_a_conservative_threshold():
     choice = choose_tau([], [], CostModel())
     assert choice.tau == 1.0            # auto-post nothing until we have evidence
     assert choice.auto_post_count == 0
+
+
+def test_candidate_taus_are_not_rounded_past_their_own_source_probability():
+    # 0.86665 rounds UP to 0.8667 at 4dp, which would exclude the very record
+    # it came from at its own candidate tau (0.86665 >= 0.8667 is False).
+    # The candidate set must be built from raw probabilities, not rounded ones,
+    # so every record's own probability appears as a candidate that includes it.
+    probs = [0.1, 0.86665, 0.99]
+    labels = [0, 1, 1]
+    choice = choose_tau(probs, labels, CostModel())
+    point_at_source = next(p for p in choice.curve if p["tau"] == 0.86665)
+    assert point_at_source["auto_post_count"] == 2  # 0.86665 and 0.99 both posted

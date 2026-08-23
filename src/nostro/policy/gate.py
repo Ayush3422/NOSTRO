@@ -8,8 +8,8 @@ probabilities and taking the minimum of
               + review_cost * reviewed(tau)
 
 gives a threshold with a defensible reason attached. Both cost inputs are stated
-assumptions, and the README labels them as such rather than presenting them as
-measured facts.
+assumptions, not measured facts, and any documentation that repeats them (e.g.
+the README) must label them as such rather than presenting them as measured.
 
 No model is involved in this decision, by design.
 """
@@ -49,7 +49,7 @@ def choose_tau(
         return ThresholdChoice(tau=1.0, expected_cost_paise=0, auto_post_count=0,
                                precision_at_tau=0.0, curve=[])
 
-    candidates = sorted({round(p, 4) for p in probabilities} | {1.0})
+    candidates = sorted(set(probabilities) | {1.0})
     curve: list[dict] = []
 
     for tau in candidates:
