@@ -83,3 +83,28 @@ def test_entries_reload_from_disk(tmp_path: Path):
     led.append("two", {"v": 2})
     reloaded = Ledger(tmp_path / "audit.jsonl").entries()
     assert [e.kind for e in reloaded] == ["one", "two"]
+
+
+def test_tail_truncation_is_NOT_detected_unsigned_chain_limitation(tmp_path: Path):
+    # This pins a known limitation, not a bug. An unsigned hash chain cannot
+    # tell "the last N entries were erased" apart from "the ledger was always
+    # this short and honestly stopped here" -- removing the tail leaves every
+    # surviving entry's seq equal to its file position and its prev_hash chain
+    # intact, so verify() has nothing to flag. The same blind spot means a
+    # forged append with a correctly computed hash is also accepted. Closing
+    # this gap needs signing or an external checkpoint outside the file itself,
+    # which is explicitly out of scope for this module (see verify()'s
+    # docstring). The test exists so a future change that silently "fixes"
+    # this without adding signing does not get treated as a regression, and so
+    # the boundary is documented rather than discovered by an attacker.
+    led = _ledger(tmp_path)
+    for i in range(5):
+        led.append("match_posted", {"i": i})
+    path = tmp_path / "audit.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    truncated = lines[:2]  # drop the last three entries (seq 2, 3, 4)
+    path.write_text("\n".join(truncated) + "\n", encoding="utf-8")
+
+    ok, bad = Ledger(path).verify()
+    assert ok is True
+    assert bad is None

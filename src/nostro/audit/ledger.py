@@ -69,7 +69,20 @@ class Ledger:
         return entry
 
     def verify(self) -> tuple[bool, int | None]:
-        """(ok, seq of the first entry that fails). Detects edits and deletions."""
+        """(ok, seq of the first entry that fails).
+
+        Detects edits, deletions, and reordering *within the recorded range*:
+        any change to a surviving entry's fields, or to the order/position of
+        surviving entries, breaks either the recomputed hash or the seq/position
+        alignment.
+
+        Does NOT detect tail truncation (removing the most recent N entries) or
+        a forged append: a chain with the tail cut off is internally consistent
+        and indistinguishable from a shorter, honest ledger, because the chain
+        is unsigned and nothing outside the file attests to how long it used to
+        be. Closing that gap needs signing or an external checkpoint, which is
+        out of scope for this module.
+        """
         prev_hash = GENESIS_HASH
         for position, entry in enumerate(self.entries()):
             expected = _digest(entry.seq, entry.ts, entry.kind, entry.payload,
