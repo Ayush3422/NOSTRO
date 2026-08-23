@@ -62,6 +62,18 @@ def test_no_client_at_all_degrades_rather_than_raising():
     assert out.kind is ResolutionKind.NEEDS_HUMAN
 
 
+def test_a_response_with_no_parsed_output_degrades_to_needs_human():
+    """parsed_output is None (no exception) on truncation at max_tokens, a
+    refusal stop_reason, or schema-invalid content per the anthropic SDK's
+    ParsedMessage.parsed_output property. propose() must not touch attributes
+    on a None draft outside its degradation path."""
+    stub = _StubClient(None)
+    out = ExceptionDesk(client=stub).propose(_item(), CanonicalSet())
+    assert out.kind is ResolutionKind.NEEDS_HUMAN
+    assert out.confidence == 0.0
+    assert out.requires_human is True
+
+
 def test_quarantined_rows_skip_the_model_entirely():
     stub = _StubClient(None)
     out = ExceptionDesk(client=stub).propose(

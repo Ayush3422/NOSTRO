@@ -99,16 +99,25 @@ class ExceptionDesk:
                 output_format=_ResolutionDraft,
             )
             draft = response.parsed_output
+            if draft is None:
+                # parsed_output is None (not an exception) on truncation at
+                # max_tokens, a refusal stop_reason, or schema-invalid content.
+                # Nothing derived from the response may be touched outside
+                # this guard, so build the resolution here, inside the try.
+                return _needs_human(
+                    item, "model returned no parsed output (truncated, refused, "
+                          "or schema-invalid); routed to a human without a draft"
+                )
+            resolution = ProposedResolution(
+                exception_id=item.exception_id, kind=draft.kind,
+                rationale=draft.rationale,
+                confidence=max(0.0, min(1.0, draft.confidence)),
+                requires_human=True,        # never the model's decision
+            )
         except Exception as exc:
             return _needs_human(item, f"model unavailable ({type(exc).__name__}); "
                                       f"routed to a human without a draft")
 
-        resolution = ProposedResolution(
-            exception_id=item.exception_id, kind=draft.kind,
-            rationale=draft.rationale,
-            confidence=max(0.0, min(1.0, draft.confidence)),
-            requires_human=True,        # never the model's decision
-        )
         if self._ledger is not None:
             self._ledger.append("resolution_proposed", resolution.model_dump(mode="json"))
         return resolution
