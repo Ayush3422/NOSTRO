@@ -58,11 +58,68 @@ class CloseResult(BaseModel):
     exceptions: list[ExceptionItem]
     threshold: ThresholdChoice
     report: EvalReport | None
+    # `report.match_rate` in holdout mode is biased upward: `_restrict_to_holdout`
+    # builds its bank/ERP rows as exactly the rows the holdout matches touched
+    # (bank/ERP rows carry no settlement_cycle, so there is no other way to
+    # scope them to the holdout population), which makes the numerator and
+    # denominator tautologically equal on those two sources. Only unmatched
+    # Razorpay rows can pull that number down, so it is not comparable to an
+    # in-sample match_rate and must not be published as one. This field is
+    # the honestly-scoped alternative: match rate over the Razorpay side only,
+    # where cycle membership is well defined. None when cfg.holdout_cycles is
+    # empty (there is no holdout population to report).
+    holdout_razorpay_match_rate: float | None
     quarantined_count: int
     parser_stats: dict[str, int]
     result_hash: str
     auto_posted: int
     degraded: list[str]
+
+
+def _partition_matches_by_cycle(
+    matches: list[Match], cset: CanonicalSet, holdout_cycles: tuple[str, ...]
+) -> tuple[list[Match], list[Match]]:
+    """Partition matches into (train, holdout) by their Razorpay leg's cycle.
+
+    This is the population-matching primitive both splits rest on: whatever
+    predictions are compared against a set of truth links -- fitting the
+    calibrator against train links, choosing tau against train links, or
+    evaluating against holdout links -- must themselves be drawn from that
+    same cycle population, or the comparison measures a population mismatch
+    instead of anything real. (Round 1 fixed this on the holdout/evaluate
+    side; round 2 fixes the identical bug on the train/fit side, where only
+    the *labels* were being restricted while the full match list -- both
+    train and holdout matches -- still went into `fit` and `choose_tau`. A
+    holdout-cycle match's pairs can never appear in train-only truth by
+    construction, so every one of them, including genuinely correct
+    matches, was being forced to label 0 -- contaminating the isotonic fit
+    and the cost sweep with several hundred manufactured false negatives.)
+
+    Every match in this system carries a Razorpay leg (matching is always
+    Razorpay<->bank or Razorpay<->ERP), so this partition is expected to be
+    total and clean rather than drop some matches to neither side. That is
+    checked, not assumed: a match with no Razorpay leg raises, because it
+    would mean this invariant no longer holds.
+    """
+    wanted = set(holdout_cycles)
+    cycle_of = {r.row_id: r.settlement_cycle for r in cset.razorpay}
+
+    missing_leg = [m.match_id for m in matches if not m.razorpay_ids]
+    if missing_leg:
+        raise AssertionError(
+            "every match is expected to carry a Razorpay leg (matching is "
+            "always Razorpay<->bank or Razorpay<->ERP); found matches "
+            f"without one, so the train/holdout population split cannot be "
+            f"trusted: {missing_leg[:5]}"
+        )
+
+    holdout_matches = [
+        m for m in matches
+        if any(cycle_of.get(rid) in wanted for rid in m.razorpay_ids)
+    ]
+    holdout_match_ids = {m.match_id for m in holdout_matches}
+    train_matches = [m for m in matches if m.match_id not in holdout_match_ids]
+    return train_matches, holdout_matches
 
 
 def _restrict_to_holdout(
@@ -77,34 +134,15 @@ def _restrict_to_holdout(
     holdout Razorpay rows plus the bank/ERP rows those filtered matches
     touch -- not the full dataset, which would silently reintroduce the same
     mismatch on the row-based metrics.
-
-    Every match in this system carries a Razorpay leg (matching is always
-    Razorpay<->bank or Razorpay<->ERP), so this filter is expected to
-    partition matches cleanly by cycle rather than drop some to neither
-    side. That is checked, not assumed: a match with no Razorpay leg raises,
-    because it would mean this invariant no longer holds.
     """
+    _, holdout_matches = _partition_matches_by_cycle(matches, cset, holdout_cycles)
+
     wanted = set(holdout_cycles)
     cycle_of = {r.row_id: r.settlement_cycle for r in cset.razorpay}
-
-    missing_leg = [m.match_id for m in matches if not m.razorpay_ids]
-    if missing_leg:
-        raise AssertionError(
-            "every match is expected to carry a Razorpay leg (matching is "
-            "always Razorpay<->bank or Razorpay<->ERP); found matches "
-            f"without one, so the holdout population split cannot be "
-            f"trusted: {missing_leg[:5]}"
-        )
-
-    eval_matches = [
-        m for m in matches
-        if any(cycle_of.get(rid) in wanted for rid in m.razorpay_ids)
-    ]
-
     holdout_razorpay_ids = {rid for rid, cyc in cycle_of.items() if cyc in wanted}
     touched_bank_ids: set[str] = set()
     touched_erp_ids: set[str] = set()
-    for m in eval_matches:
+    for m in holdout_matches:
         touched_bank_ids.update(m.bank_ids)
         touched_erp_ids.update(m.erp_ids)
 
@@ -113,7 +151,19 @@ def _restrict_to_holdout(
         bank=[r for r in cset.bank if r.row_id in touched_bank_ids],
         erp=[r for r in cset.erp if r.row_id in touched_erp_ids],
     )
-    return eval_matches, eval_cset
+    return holdout_matches, eval_cset
+
+
+def _restrict_to_train(
+    matches: list[Match], cset: CanonicalSet, holdout_cycles: tuple[str, ...]
+) -> list[Match]:
+    """The other half of the split: predictions used to fit the calibrator
+    and choose tau must themselves be train-cycle matches, not the full
+    match list labelled with train-only truth. See
+    `_partition_matches_by_cycle` for why that distinction is load-bearing.
+    """
+    train_matches, _ = _partition_matches_by_cycle(matches, cset, holdout_cycles)
+    return train_matches
 
 
 def run_close(cfg: CloseConfig, client=None) -> CloseResult:
@@ -162,19 +212,29 @@ def run_close(cfg: CloseConfig, client=None) -> CloseResult:
     # --- calibrate + gate, on the TRAIN split only -------------------------
     # The held-out split is by settlement cycle: a link belongs to holdout
     # when its Razorpay leg's cycle is in cfg.holdout_cycles; everything else
-    # is train. The calibrator's `fit` and the tau search in `choose_tau` may
-    # only ever see labels derived from train links -- holdout ground truth
-    # must never reach either call, or every headline number this pipeline
-    # reports would be optimistic.
+    # is train. Both the LABELS (from train links) and the PREDICTIONS (train-
+    # cycle matches only) that go into `fit` and `choose_tau` must be
+    # restricted -- restricting only the labels while still fitting/choosing
+    # on the full match list forces every holdout-cycle match, including
+    # correct ones, to label 0 (its truth lives in the holdout links, which
+    # never reach `train_links`), manufacturing false negatives that
+    # contaminate the fit. See `_partition_matches_by_cycle`.
     holdout_links = filter_to_cycles(links, cset, cfg.holdout_cycles) if links else []
     holdout_ids = {id(link) for link in holdout_links}
     train_links = [link for link in links if id(link) not in holdout_ids]
 
-    if train_links:
-        train_labels = label_matches(matches, train_links)
-        calibrator = Calibrator().fit(scores, train_labels)
-        probabilities = calibrator.predict(scores)
-        threshold = choose_tau(probabilities, train_labels, cfg.costs)
+    train_matches = (
+        _restrict_to_train(matches, cset, cfg.holdout_cycles)
+        if cfg.holdout_cycles else matches
+    )
+
+    if train_matches and train_links:
+        train_labels = label_matches(train_matches, train_links)
+        train_scores = [raw_score(extract_features(m, blocks)) for m in train_matches]
+        calibrator = Calibrator().fit(train_scores, train_labels)
+        probabilities = calibrator.predict(scores)          # applied to every match
+        train_probabilities = calibrator.predict(train_scores)
+        threshold = choose_tau(train_probabilities, train_labels, cfg.costs)
     else:
         degraded.append("calibration")
         probabilities = scores
@@ -215,19 +275,33 @@ def run_close(cfg: CloseConfig, client=None) -> CloseResult:
     if cfg.holdout_cycles:
         eval_matches, eval_cset = _restrict_to_holdout(matches, cset, cfg.holdout_cycles)
         eval_links = holdout_links
+        # Razorpay-only match rate over the holdout population: the only side
+        # of `eval_cset` where cycle membership is well defined, and the only
+        # side where "matched" and "total" aren't tautologically equal by
+        # construction (see the field docstring on CloseResult).
+        matched_razorpay_ids = {rid for m in eval_matches for rid in m.razorpay_ids}
+        holdout_razorpay_ids = {r.row_id for r in eval_cset.razorpay}
+        holdout_razorpay_match_rate = (
+            len(matched_razorpay_ids & holdout_razorpay_ids) / len(holdout_razorpay_ids)
+            if holdout_razorpay_ids else 0.0
+        )
     else:
         eval_matches, eval_cset = matches, cset
         eval_links = links      # explicit fallback: no holdout split configured
+        holdout_razorpay_match_rate = None
     report = evaluate(eval_matches, eval_links, eval_cset, elapsed) if eval_links else None
     if report is not None:
         ledger.append("evaluated", {
-            "precision": report.precision, "recall": report.recall,
-            "f1": report.f1, "match_rate": report.match_rate,
+            "precision": report.precision, "recall": report.recall, "f1": report.f1,
+            "holdout_razorpay_match_rate": holdout_razorpay_match_rate,
+            "match_rate": report.match_rate,
         })
 
     return CloseResult(
         matches=matches, probabilities=probabilities, exceptions=exceptions,
-        threshold=threshold, report=report, quarantined_count=len(quarantined),
+        threshold=threshold, report=report,
+        holdout_razorpay_match_rate=holdout_razorpay_match_rate,
+        quarantined_count=len(quarantined),
         parser_stats=parser.stats, result_hash=ledger.result_hash(),
         auto_posted=auto_posted, degraded=degraded,
     )

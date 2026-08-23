@@ -66,7 +66,15 @@ def close_cmd(
     typer.echo(f"parser         {result.parser_stats}")
     if result.report:
         r = result.report
-        typer.echo(f"match rate     {r.match_rate:.4f}")
+        if result.holdout_razorpay_match_rate is not None:
+            # The whole-population match_rate is biased upward in holdout
+            # mode (bank/ERP rows carry no settlement_cycle, so they can
+            # only be scoped to "rows a holdout match touched" -- see
+            # CloseResult.holdout_razorpay_match_rate). Print the honestly-
+            # scoped Razorpay-only rate instead, named for what it is.
+            typer.echo(f"razorpay match rate (holdout)  {result.holdout_razorpay_match_rate:.4f}")
+        else:
+            typer.echo(f"match rate     {r.match_rate:.4f}")
         typer.echo(f"precision      {r.precision:.4f}")
         typer.echo(f"recall         {r.recall:.4f}")
         typer.echo(f"f1             {r.f1:.4f}")

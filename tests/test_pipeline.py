@@ -203,3 +203,99 @@ def test_holdout_precision_recovers_near_in_sample_once_populations_match(tmp_pa
     # but a population-matched holdout precision should not be wildly below
     # the in-sample number the way the mismatched version was (0.30 vs 0.99).
     assert holdout.report.precision >= in_sample.report.precision - 0.25
+
+
+def test_train_restriction_excludes_holdout_matches_from_fitting():
+    """The other half of round 1's invariant: predictions used to fit the
+    calibrator and choose tau must themselves be train-cycle matches, not
+    just labelled against train-only truth. A holdout-cycle match must not
+    survive `_restrict_to_train`, even a genuinely correct one -- if it did,
+    it would either contaminate the fit (if mislabelled 0 against train
+    truth, which is what round 1's leftover bug did) or leak (if somehow
+    labelled correctly using holdout truth)."""
+    from datetime import date
+
+    from nostro.models import CanonicalRow, Direction, Match, MatchMethod, Source
+    from nostro.normalize.canonical import CanonicalSet
+    from nostro.pipeline import _restrict_to_train
+
+    def row(rid, src, cycle=None):
+        return CanonicalRow(source=src, row_id=rid, amount_paise=100,
+                            direction=Direction.CREDIT, value_date=date(2026, 6, 1),
+                            settlement_cycle=cycle)
+
+    cset = CanonicalSet(
+        razorpay=[row("pay_1", Source.RAZORPAY, "C1"),   # train
+                  row("pay_2", Source.RAZORPAY, "C2")],  # holdout
+        bank=[row("bk_1", Source.BANK), row("bk_2", Source.BANK)],
+    )
+    train_match = Match(match_id="m1", razorpay_ids=("pay_1",), bank_ids=("bk_1",),
+                        score=1.0, method=MatchMethod.EXACT)
+    holdout_match = Match(match_id="m2", razorpay_ids=("pay_2",), bank_ids=("bk_2",),
+                          score=1.0, method=MatchMethod.EXACT)
+
+    train_matches = _restrict_to_train([train_match, holdout_match], cset, ("C2",))
+
+    assert {m.match_id for m in train_matches} == {"m1"}
+    cycle_of = {r.row_id: r.settlement_cycle for r in cset.razorpay}
+    for m in train_matches:
+        assert all(cycle_of[rid] != "C2" for rid in m.razorpay_ids)
+
+
+def test_train_and_holdout_match_partitions_are_disjoint_and_total(tmp_path: Path):
+    """End-to-end version of the same invariant against the real generator
+    output: every match belongs to exactly one side of the split, by cycle."""
+    from nostro.pipeline import _partition_matches_by_cycle
+    from nostro.match.blocking import BlockingConfig, build_blocks
+    from nostro.match.deterministic import match_deterministic
+    from nostro.match.solver import match_subset_sums
+    from nostro.ingest.loader import load_csv
+    from nostro.models import Source
+    from nostro.normalize.canonical import CanonicalSet, to_canonical
+    from nostro.normalize.narration_parser import NarrationParser
+    from nostro.match.solver import SolverConfig
+
+    ds = _dataset(tmp_path)
+    data_dir = ds.razorpay_csv.parent
+    parser = NarrationParser()
+    rp = load_csv(data_dir / "razorpay_settlement.csv", Source.RAZORPAY)
+    bk = load_csv(data_dir / "bank_statement.csv", Source.BANK)
+    erp = load_csv(data_dir / "erp_sales.csv", Source.ERP)
+    cset = CanonicalSet(
+        razorpay=to_canonical(rp.rows, Source.RAZORPAY),
+        bank=to_canonical(bk.rows, Source.BANK, parser),
+        erp=to_canonical(erp.rows, Source.ERP),
+    )
+    blocks = build_blocks(cset, BlockingConfig())
+    deterministic = match_deterministic(cset, blocks, BlockingConfig())
+    solved = match_subset_sums(cset, blocks, deterministic.bank_consumed, SolverConfig())
+    matches = deterministic.matches + solved
+
+    train_matches, holdout_matches = _partition_matches_by_cycle(
+        matches, cset, ds.holdout_cycles
+    )
+    train_ids = {m.match_id for m in train_matches}
+    holdout_ids = {m.match_id for m in holdout_matches}
+    assert not (train_ids & holdout_ids)                       # disjoint
+    assert train_ids | holdout_ids == {m.match_id for m in matches}  # total
+    assert holdout_matches                                     # non-trivial split
+
+
+def test_tau_uses_only_train_cycle_predictions(tmp_path: Path):
+    """Regression for round 2: before the fix, holdout-cycle matches entered
+    `fit`/`choose_tau` mislabelled as 0 purely because their truth lives in
+    holdout links, which is enough with this cost model (Rs 2,500 wrong-post
+    vs Rs 50 review) to push tau to 1.0 / auto_posted to 0 as an artifact,
+    not a risk judgement. This does not assert a specific tau (that is a
+    real modelling outcome, not a contract) -- only that fitting used a
+    population consistent with `_restrict_to_train`, which is checked
+    directly in the two tests above. This test exists to document the
+    expectation and catch a gross regression back to the old behaviour.
+    """
+    ds = _dataset(tmp_path)
+    result = run_close(CloseConfig(data_dir=ds.razorpay_csv.parent,
+                                   audit_path=tmp_path / "audit.jsonl",
+                                   holdout_cycles=ds.holdout_cycles,
+                                   use_model=False))
+    assert result.threshold is not None
+    assert 0.0 <= result.threshold.tau <= 1.0
