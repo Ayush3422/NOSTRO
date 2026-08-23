@@ -99,3 +99,47 @@ def test_reference_pass_respects_direction():
     assert len(matches) == 1
     assert matches[0].pairs() == {("inv_1", "pay_1")}
     assert "cb_1" not in result.consumed
+
+
+def test_erp_axis_match_leaves_row_available_for_bank_axis():
+    # A payment claimed by pass 1 (reference identity, Razorpay<->ERP on order_id)
+    # must still be reachable by pass 2 (exact amount, Razorpay<->bank). Three-way
+    # reconciliation means the same payment legitimately sits on both axes; a
+    # single global `consumed` set would let pass 1 starve pass 2 of a row it has
+    # every right to use — exactly the bug the subset-sum solver surfaced on the
+    # real dataset.
+    cset = CanonicalSet(
+        razorpay=[_row("pay_1", Source.RAZORPAY, 97640, 3, {"order_id": "o1"})],
+        bank=[_row("bk_1", Source.BANK, 97640, 3)],
+        erp=[_row("inv_1", Source.ERP, 100000, 1, {"order_id": "o1"})],
+    )
+    result = _run(cset)
+    methods = {m.method for m in result.matches}
+    assert methods == {MatchMethod.REFERENCE, MatchMethod.EXACT}
+    assert any(m.pairs() == {("inv_1", "pay_1")} for m in result.matches)
+    assert any(m.pairs() == {("bk_1", "pay_1")} for m in result.matches)
+    assert "pay_1" in result.bank_consumed
+    assert "pay_1" in result.consumed
+
+
+def test_bank_axis_match_leaves_row_available_for_erp_axis():
+    # Same claim, the other direction: a payment already claimed on the bank axis
+    # (passes 2-3) must still surface its independent ERP reference match (pass 1).
+    # Both matches existing side by side is the point — the two axes must not
+    # compete for the same row.
+    cset = CanonicalSet(
+        razorpay=[_row("pay_2", Source.RAZORPAY, 50000, 3, {"order_id": "o2"})],
+        bank=[_row("bk_2", Source.BANK, 50000, 3)],
+        erp=[_row("inv_2", Source.ERP, 52000, 2, {"order_id": "o2"})],
+    )
+    result = _run(cset)
+    ref_matches = [m for m in result.matches if m.method is MatchMethod.REFERENCE]
+    bank_matches = [m for m in result.matches if m.method is MatchMethod.EXACT]
+    assert len(ref_matches) == 1
+    assert ref_matches[0].pairs() == {("inv_2", "pay_2")}
+    assert len(bank_matches) == 1
+    assert bank_matches[0].pairs() == {("bk_2", "pay_2")}
+    assert "pay_2" in result.bank_consumed
+    assert "pay_2" in result.consumed
+    assert "inv_2" in result.consumed
+    assert "inv_2" not in result.bank_consumed

@@ -28,7 +28,7 @@ started = perf_counter()
 cfg = BlockingConfig()
 blocks = build_blocks(cset, cfg)
 result = match_deterministic(cset, blocks, cfg)
-solver_matches = match_subset_sums(cset, blocks, result.consumed, SolverConfig())
+solver_matches = match_subset_sums(cset, blocks, result.bank_consumed, SolverConfig())
 all_matches = result.matches + solver_matches
 elapsed = perf_counter() - started
 
