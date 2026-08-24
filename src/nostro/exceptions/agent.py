@@ -65,6 +65,15 @@ class ExceptionDesk:
         self._client = client
         self._ledger = ledger
         self._model = model
+        # Counters, not a restructure: how many proposals were actually
+        # attempted against the model (excludes the deliberate _SKIP_MODEL
+        # and no-client short-circuits, neither of which is a failure), and
+        # how many of those fell back to needs_human because the model call
+        # itself failed or returned nothing usable. The pipeline uses these
+        # to decide whether "llm" belongs in `degraded` for a run that used
+        # a client but got nothing back from it.
+        self.attempted_count = 0
+        self.degraded_count = 0
 
     def _prompt(self, item: ExceptionItem, cset: CanonicalSet) -> str:
         rows = cset.by_id()
@@ -90,6 +99,7 @@ class ExceptionDesk:
         if self._client is None:
             return _needs_human(item, "no model client configured; running deterministic-only")
 
+        self.attempted_count += 1
         try:
             response = self._client.messages.parse(
                 model=self._model,
@@ -104,6 +114,7 @@ class ExceptionDesk:
                 # max_tokens, a refusal stop_reason, or schema-invalid content.
                 # Nothing derived from the response may be touched outside
                 # this guard, so build the resolution here, inside the try.
+                self.degraded_count += 1
                 return _needs_human(
                     item, "model returned no parsed output (truncated, refused, "
                           "or schema-invalid); routed to a human without a draft"
@@ -115,6 +126,7 @@ class ExceptionDesk:
                 requires_human=True,        # never the model's decision
             )
         except Exception as exc:
+            self.degraded_count += 1
             return _needs_human(item, f"model unavailable ({type(exc).__name__}); "
                                       f"routed to a human without a draft")
 

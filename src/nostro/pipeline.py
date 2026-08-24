@@ -256,6 +256,13 @@ def run_close(cfg: CloseConfig, client=None) -> CloseResult:
         desk = ExceptionDesk(client=client, ledger=ledger)
         for item in exceptions[:50]:          # bounded: the desk is the expensive part
             desk.propose(item, cset)
+        # A client was supplied and asked to run, but if every proposal it
+        # actually attempted came back degraded (call failed, or returned no
+        # usable parsed output), the model contributed nothing this close --
+        # that must be reported the same as `use_model=False`, not hidden
+        # behind a client object that merely exists.
+        if desk.attempted_count > 0 and desk.degraded_count == desk.attempted_count:
+            degraded.append("llm")
     else:
         degraded.append("llm")
 
