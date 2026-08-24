@@ -10,3 +10,4 @@ node_modules/
 # user-supplied reference screenshots, not part of the submission
 *.png
 src/nostro.egg-info/
+ui/tsconfig.tsbuildinfo
