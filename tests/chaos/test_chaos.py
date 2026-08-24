@@ -34,6 +34,31 @@ class _ExplodingClient:
     messages = _Messages()
 
 
+class _StubResponse:
+    """Same shape tests/exceptions/test_agent.py uses to stub a healthy call."""
+
+    def __init__(self, parsed):
+        self.parsed_output = parsed
+
+
+class _HealthyClient:
+    """A client whose messages.parse succeeds every time, returning a valid
+    draft. Mirrors tests/exceptions/test_agent.py's _StubClient rather than
+    inventing a new stub shape.
+    """
+
+    class _Messages:
+        def parse(self, **kwargs):
+            from nostro.exceptions.agent import _ResolutionDraft
+            from nostro.exceptions.taxonomy import ResolutionKind
+            return _StubResponse(_ResolutionDraft(
+                kind=ResolutionKind.CHASE_COUNTERPARTY,
+                rationale="ask the bank for the missing credit", confidence=0.8,
+            ))
+
+    messages = _Messages()
+
+
 def test_model_outage_still_closes_the_books(dataset, tmp_path: Path):
     """Chaos 1 — the LLM is down mid-close."""
     baseline = _close(dataset.razorpay_csv.parent, tmp_path / "a.jsonl")
@@ -60,6 +85,21 @@ def test_model_outage_is_reported_as_degraded(dataset, tmp_path: Path):
         client=_ExplodingClient(),
     )
     assert "llm" in result.degraded
+
+
+def test_a_healthy_model_is_not_reported_as_degraded(dataset, tmp_path: Path):
+    """Negative case for the controller-authorised fix: a client whose
+    messages.parse succeeds on every call must not be mislabelled as
+    degraded. The flag drives what the dashboard tells a viewer about
+    whether the close ran degraded, so a false positive here would
+    mislabel every healthy close.
+    """
+    result = run_close(
+        CloseConfig(data_dir=dataset.razorpay_csv.parent,
+                    audit_path=tmp_path / "b3.jsonl", use_model=True),
+        client=_HealthyClient(),
+    )
+    assert "llm" not in result.degraded
 
 
 def test_narration_parser_survives_a_broken_model(dataset):
@@ -109,21 +149,36 @@ def test_duplicate_utrs_are_escalated_not_double_matched(tmp_path: Path):
     Razorpay<->bank axis, one on the independent Razorpay<->ERP axis
     (pipeline.py: "the solver only works the Razorpay<->bank axis" and the
     reference pass separately claims rows "on the *other* (ERP) axis"). That
-    is not double consumption, so the check has to be per axis: the same
-    bank credit, or the same ERP invoice, must never be claimed by two
-    different matches.
+    is not double consumption, so the check has to be per axis.
+
+    But what a duplicate UTR actually threatens is the shared side: two
+    distinct bank rows B1/B2 sharing one UTR, with the matcher resolving the
+    ambiguity wrong and producing two bank-axis matches for the same
+    Razorpay row (razorpay_ids=[R1], bank_ids=[B1]) and
+    (razorpay_ids=[R1], bank_ids=[B2]). B1 != B2, so a check that only
+    tracks bank_ids/erp_ids sees no overlap and passes silently on exactly
+    the scenario this test is named for. So each axis's seen-set must also
+    carry razorpay_ids, checked and updated only against matches that
+    belong to that axis (a match's razorpay leg legitimately participates
+    in one bank-axis match AND one erp-axis match -- that combination must
+    stay allowed).
     """
     ds = generate(GeneratorConfig(cycles=6, payments_per_cycle=10,
                                   duplicate_utr_rate=1.0), tmp_path / "dup")
     result = _close(ds.razorpay_csv.parent, tmp_path / "d.jsonl")
-    seen_bank: set[str] = set()
-    seen_erp: set[str] = set()
+    seen_bank_axis: set[str] = set()
+    seen_erp_axis: set[str] = set()
     for match in result.matches:
-        bank_ids, erp_ids = set(match.bank_ids), set(match.erp_ids)
-        assert not (bank_ids & seen_bank), "a bank row was consumed by two matches"
-        assert not (erp_ids & seen_erp), "an ERP row was consumed by two matches"
-        seen_bank |= bank_ids
-        seen_erp |= erp_ids
+        if match.bank_ids:
+            touched = set(match.razorpay_ids) | set(match.bank_ids)
+            assert not (touched & seen_bank_axis), \
+                "a Razorpay or bank row was consumed by two bank-axis matches"
+            seen_bank_axis |= touched
+        if match.erp_ids:
+            touched = set(match.razorpay_ids) | set(match.erp_ids)
+            assert not (touched & seen_erp_axis), \
+                "a Razorpay or ERP row was consumed by two ERP-axis matches"
+            seen_erp_axis |= touched
 
 
 def test_the_audit_ledger_still_verifies_after_a_degraded_close(dataset, tmp_path: Path):
