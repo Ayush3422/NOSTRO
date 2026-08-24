@@ -74,6 +74,13 @@ class CloseResult(BaseModel):
     result_hash: str
     auto_posted: int
     degraded: list[str]
+    # Calibration diagnostics on the TRAIN population that `fit`/`choose_tau`
+    # actually saw -- exposed so a caller (scripts/build_evaluation.py) can
+    # report a real, generated Brier-score improvement instead of hand-typing
+    # one. None when calibration was skipped (see the `degraded` list).
+    calibration_scores: list[float] | None = None
+    calibration_labels: list[int] | None = None
+    calibration_probabilities: list[float] | None = None
 
 
 def _partition_matches_by_cycle(
@@ -239,6 +246,7 @@ def run_close(cfg: CloseConfig, client=None) -> CloseResult:
         degraded.append("calibration")
         probabilities = scores
         threshold = choose_tau([], [], cfg.costs)
+        train_scores, train_labels, train_probabilities = [], [], []
 
     auto_posted = sum(
         1 for p in probabilities if decide(p, threshold.tau) is Decision.AUTO_POST
@@ -321,4 +329,7 @@ def run_close(cfg: CloseConfig, client=None) -> CloseResult:
         quarantined_count=len(quarantined),
         parser_stats=parser.stats, result_hash=ledger.result_hash(),
         auto_posted=auto_posted, degraded=degraded,
+        calibration_scores=train_scores or None,
+        calibration_labels=train_labels or None,
+        calibration_probabilities=train_probabilities or None,
     )
