@@ -14,11 +14,21 @@ from nostro.pipeline import CloseConfig, run_close
 
 app = typer.Typer(help="Nostro - three-way settlement reconciliation.")
 
+# Single source of truth for the default dataset shape: read it off
+# GeneratorConfig itself rather than duplicating the literals here. The CLI
+# and `scripts/build_evaluation.py` (which calls `GeneratorConfig()` with no
+# overrides) must produce byte-identical data for the same seed -- a judge
+# running `nostro generate && nostro close` has to see the numbers the
+# README quotes, not a second, silently different dataset.
+_DEFAULT_CYCLES = GeneratorConfig.model_fields["cycles"].default
+_DEFAULT_PAYMENTS = GeneratorConfig.model_fields["payments_per_cycle"].default
+
 
 @app.command("generate")
 def generate_cmd(
     out: Path = typer.Option(Path("data/full"), help="Output directory."),
-    cycles: int = typer.Option(30), payments: int = typer.Option(60),
+    cycles: int = typer.Option(_DEFAULT_CYCLES),
+    payments: int = typer.Option(_DEFAULT_PAYMENTS),
 ) -> None:
     """Generate the adversarial synthetic dataset with ground truth."""
     ds = generate(GeneratorConfig(cycles=cycles, payments_per_cycle=payments), out)

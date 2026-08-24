@@ -14,7 +14,7 @@ None were typed by hand. Labels come from the generator that produced the data.
 | precision | 0.9937 |
 | recall | 0.6894 |
 | F1 | 0.8140 |
-| throughput | 341 rows/s |
+| throughput | 351 rows/s |
 | matches | 3,126 |
 | exceptions | 541 |
 | quarantined at ingest | 0 |

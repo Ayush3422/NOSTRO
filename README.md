@@ -162,18 +162,22 @@ under load (see Limitations).
 ## How to run
 
 ```bash
-docker compose up
-# api on http://localhost:8000, ui on http://localhost:3000
-```
-
-or, without Docker:
-
-```bash
 pip install -e .
 nostro generate                 # writes data/full + the holdout split
 nostro close --no-model         # or drop --no-model to use the exception desk
 nostro verify                   # confirms the audit ledger is unbroken
 nostro replay                   # confirms the close reproduces byte-for-byte
+```
+
+`nostro generate` and `python scripts/build_evaluation.py` build from the same
+`GeneratorConfig` defaults, so `nostro close` reproduces the exact headline
+numbers in this README — verified by running both and comparing result hashes.
+
+Alternatively:
+
+```bash
+docker compose up
+# api on http://localhost:8000, ui on http://localhost:3000
 ```
 
 ## Honest limitations
