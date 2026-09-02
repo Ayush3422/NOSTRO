@@ -43,7 +43,7 @@ through to the parser's `llm_fallback` injection point, which is unwired in
 this build (see below) — those rows are simply left unparsed, not sent to a
 live model.
 
-**172 tests passing** (`python -m pytest -v`).
+**173 tests passing** (`python -m pytest -v`).
 
 Full breakdown — exception list by class with rupee values, reproducibility
 hash, degraded-capability list — is in [`EVALUATION.md`](./EVALUATION.md).
