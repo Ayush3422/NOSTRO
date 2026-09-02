@@ -244,3 +244,163 @@ docker compose up
    (`GeneratorConfig`); `data/` is gitignored and is never committed.
 6. Single-merchant, single-currency. No multi-tenant, multi-currency, or
    partial-refund-of-a-refund handling exists.
+
+## Build decisions log
+
+This project was built by a controller dispatching fresh implementer and
+reviewer subagents per task, with a written ruling every time the plan
+conflicted with what a reviewer found, what real data showed, or what the
+spec actually required. **51 rulings**, numbered in the order they were made.
+Every one is listed below — including the two whose detail didn't survive the
+session, named honestly rather than reconstructed from a guess.
+
+Read the "cost if wrong" column before the "decision" column if you're
+deciding whether to trust any of this: almost every ruling here exists
+because a number was real but not comparable, a claim was aspirational
+stated as fact, or a threshold looked like a judgment but was an artifact.
+The code was mostly fine. What needed policing was whether it told the
+truth about itself — which is also, not coincidentally, this project's
+whole pitch.
+
+<details>
+<summary><strong>Setup — before any code existed (R0–R0b)</strong></summary>
+
+| Id | Task | Finding | Decision | Cost if wrong |
+|---|---|---|---|---|
+| R0 | — | Whether to implement on `main` or an isolated branch. | Work on `build/nostro`. Implementing on a default branch without consent is against process, and the repo was brand new so isolation cost nothing. | One branch rename before push. |
+| R0b | — | Installed Python is 3.12.10; the plan's floor is `>=3.11`. | Build on 3.12, leave the floor at 3.11 — it's satisfied. | None — a floor is a minimum, not a target. |
+
+</details>
+
+<details>
+<summary><strong>Pre-flight scan — read before Task 1 was dispatched (R1–R4)</strong></summary>
+
+| Id | Task | Finding | Decision | Cost if wrong |
+|---|---|---|---|---|
+| R1 | 10 | The solver's plan text assigns `by_id = blocks.row_index` and never reads it. | Dead local — instructed the implementer to omit it before writing a line of code. | None. |
+| **R2** | 15 | The plan fits the calibrator and evaluates on *every* ground-truth link — leakage, and it contradicts the spec's binding held-out-by-cycle requirement. | Split links into train/holdout by settlement cycle; fit the calibrator and choose τ on train only; report on holdout. | Optimistic precision/recall — the exact dishonesty this project exists to beat. (Later found to be under-specified itself — see R28/R29.) |
+| R3 | 8 | Blocking sweeps ~1,400 dict lookups per row, ~7M for the full dataset. | Accepted as written — correctness first, throughput is a reported metric, not a target. | A slower throughput number in the write-up, nothing more. |
+| R4 | 18 | A close whose live model client raises doesn't record `"llm"` in `degraded` — only `use_model=False` does. | Deferred to the final review; the chaos suite's real claim is number-identity, not the flag. | UI under-reports one degradation mode. (Closed properly at R47.) |
+
+</details>
+
+<details>
+<summary><strong>Foundation — generator, ingest, normalisation, blocking, Tasks 1–9 (R5–R16)</strong></summary>
+
+| Id | Task | Finding | Decision | Cost if wrong |
+|---|---|---|---|---|
+| R5 | 4 | A `merged_credit_rate` chaos knob was declared but never implemented, while the module claimed "ten injectors." | Removed rather than implemented — a knob that silently does nothing is precisely the dishonesty this project's README argues against. | Lose an injector never had. |
+| R6 | 4 | All seven generator tests checked ground-truth *shape*, never *values* — a wrong-subset bug would have passed silently. | Added a test asserting a linked bank credit equals the exact rupee sum of its linked payments, over a genuine multi-payment split. | One extra test to maintain. |
+| **R7** | 5 | A shared helper zeroed blank amounts on every source; blank is legitimate on bank debit/credit but not on Razorpay or ERP core amounts. | Split into a blank-tolerant path (bank only) and a strict path (Razorpay/ERP); verified real refunds carry `"0.00"`, never blank. | A legitimately-blank amount would quarantine — visible, not silent. |
+| R8 | 5 | Blank `payment_id`/`order_id`/`invoice_no` passed validation silently; the bank contract already blocked this, the other two didn't. | Added the same blank-check validator to all three contracts. | One extra validator per contract. |
+| R9 | 6 | The squeeze-copy narration retry used a `\b`-anchored pattern against a string with every non-alphanumeric character stripped — no internal `\b` positions exist, so it only ever matched the degenerate case. | Rewrote with a digits-only pattern, verified against the generator's real UTR format, and re-measured the miss rate the README publishes. | A pattern too narrow for a UTR containing letters — visible as a higher miss rate, not a silent wrong answer. |
+| R10 | 6 | A dead `+= 0` line and an unused wrapper function sat in the module that is the project's primary "didn't use AI" exhibit. | Routed in despite being Minor — dead code in the exhibit undermines the exhibit. | Negligible. |
+| R11 | 7 | `CanonicalSet.by_id()` silently dropped a row on a cross-source id collision; the reviewer's proposed fix (namespace the keys) would have broken four downstream consumers that address rows by bare id. | Overrode the reviewer — raise loudly on collision instead, preserving the bare-id contract everything else depends on. | A genuine collision aborts the close instead of silently losing a row — the correct failure direction for a books system. |
+| R12 | 8 | Pass 1 (reference identity) had no direction filter. Confirmed live: refunds and chargebacks inherit the original payment's `order_id`, and `cb_` sorts before `pay_`, so a chargeback debit could claim the ERP invoice the real payment needed. | Added the same direction filter passes 2–3 already had. | None — only removes pairings that must never happen. |
+| R13 | 8 | Pass 1 labelled every order-id match `EXACT` even when Razorpay-net vs. ERP-gross legitimately differ by fee+GST, making the published "exact" count uninterpretable. | Added a new `REFERENCE` match type, ranked equal to `EXACT` so scoring's normalisation stays untouched. | One extra enum member; metrics get more granular, not less honest. |
+| R14 | 8 | A dead config field, same defect class as R5. | Removed for consistency. | None. |
+| R15 | 8/9 | *Not recovered — see note at the end of this log.* | | |
+| R16 | 9 | `filter_to_cycles` — the mechanism the entire held-out claim rests on — shipped with no direct unit test. | Carried the requirement forward into Task 15 rather than reopening an already-clean task. | Coverage landed one task later than ideal. |
+
+</details>
+
+<details>
+<summary><strong>Matching &amp; the subset-sum solver — Task 10, four fix rounds, the hardest task in the build (R17–R21)</strong></summary>
+
+| Id | Task | Finding | Decision | Cost if wrong |
+|---|---|---|---|---|
+| **R17** | 10 | A single global "consumed" set meant pass 1 claimed ~2,211 rows before the bank-axis matcher or solver ever ran. Confirmed by counting ground-truth pairs by axis (2,211 ERP-side, 2,361 bank-side) — measured recall (0.5059) matched the ERP share almost exactly. | Consumption became per-axis: a payment legitimately matches once on each axis, exactly as the ground truth encodes it. | If the axes weren't truly independent, precision would fall — visible immediately, not silent. |
+| R18 | 10 | Once the bank axis opened, the solver produced 49 false positives per genuine match. Measured: all 411 genuine splits share one settlement cycle *and* sum exactly to the credit — 411/411 on both. | Constrained subsets to one cycle and a near-zero residual — both domain-real, not fitted to the generator. | A real multi-cycle settlement or >2-paise drift would be missed and reported as an exception — the correct failure direction. |
+| R19 | 10 | `max_candidates=40`, written before the cycle constraint existed, made the solver stage project to ~28 minutes. | Swept {12,15,20,25}, adopted 15 on best F1, shipped the full curve instead of picking a number by feel. | A tighter bound recovers fewer splits — visible in the sweep table, not hidden. |
+| R20 | 10 | The 2-paise tolerance tightening had no integration-level test — every fixture summed to residual 0, so nothing distinguished the new bound from the old 100-paise one. | Added a 50-paise-off subset (refused) and a 1-paise boundary case (accepted). | None. |
+| R21 | 10 | Blank `settlement_cycle` had no validator, unlike the identifiers fixed at R8 — a blank cycle would pool unrelated batches under one key and defeat R18 entirely. | Added the same blank-check validator for consistency. | A row with a genuinely absent cycle quarantines instead of silently mis-grouping. |
+
+</details>
+
+<details>
+<summary><strong>Scoring, calibration, policy gate — Tasks 11–12 (R22–R25)</strong></summary>
+
+| Id | Task | Finding | Decision | Cost if wrong |
+|---|---|---|---|---|
+| R22 | 11 | `raw_score` divided by `1 + residual/10`, exactly zero at `residual = -10`; the "absurd input" test only used a large positive residual, so the crash never surfaced. | Guarded the term against a negative residual; added the missing test. | None. |
+| R23 | 11 | A docstring asserted "every reported number comes from the held-out cycles" as a present-tense guarantee the code didn't enforce. | Reworded to describe the caller's obligation, not a guarantee. | Negligible. |
+| R24 | 12 | τ candidates were built from *rounded* probabilities but compared against *unrounded* ones; float rounding isn't monotone in the needed direction, so the true cost-optimum could be skipped. | Dedupe candidates on raw floats, no rounding. | None — strictly widens the candidate set. |
+| R25 | 12 | The gate's docstring claimed "the README labels them as such" before the README said any such thing. | Reworded to state the requirement; carried the actual obligation forward to Task 19. | Negligible. |
+
+</details>
+
+<details>
+<summary><strong>Audit ledger &amp; exception desk — Tasks 13–14 (R26–R27)</strong></summary>
+
+| Id | Task | Finding | Decision | Cost if wrong |
+|---|---|---|---|---|
+| R26 | 13 | The unsigned hash chain can't detect tail truncation or a forged append — the most attacker-relevant case — while the docstring claimed a blanket "detects edits and deletions." | Did not attempt signing (real scope, out of a 3-day build). Scoped the docstring to the true guarantee and **added a test that pins the limitation by name.** | None — ships an accurate claim instead of an inflated one. |
+| **R27** | 14 | **Critical.** `propose()` read a model attribute outside its own try/except. The Anthropic SDK returns a null parsed-output *without raising* on truncation, refusal, or schema-invalid content — so a real truncated response would crash the desk instead of degrading, breaking the exact claim the chaos suite exists to prove. | Guarded for the null case, routed to `NEEDS_HUMAN`; added a stub reproducing the SDK's real failure shape. | None — a pure correctness fix on the project's central claim. |
+
+</details>
+
+<details>
+<summary><strong>The held-out split — where the honest numbers came from, Tasks 15–16 (R28–R34)</strong></summary>
+
+| Id | Task | Finding | Decision | Cost if wrong |
+|---|---|---|---|---|
+| **R28** | 15 | R2 (above) was under-specified — it said "report on holdout" but never restricted the *predicted* set to holdout too. The evaluation compared the full match list against holdout-only truth, so ~90% of matches (train-cycle ones) counted as false positives. Precision came out 0.2972 against an in-sample 0.9887. | Filtered predictions to the holdout population before evaluating, on both sides of the comparison. | Either absurdly pessimistic or silently optimistic — both fatal for a project selling honest metrics. |
+| **R29** | 15 | **Critical.** The same mismatch on the *train* side: the calibrator and τ search saw the full match list while labels came from train-only truth, forcing every holdout-cycle match — including correct ones — to label 0. This produced τ=1.0, "never auto-post," which the first draft wrongly explained as a considered risk judgment rather than an artifact. | Restricted matches, not just labels, to train-cycle predictions before fitting or choosing τ. | We would have shipped a calibrator trained on ~30% garbage labels *and* a fabricated finding presented as risk analysis — worse than a bad number. |
+| R30 | 15 | The held-out match rate was inflated by construction — the restricted population only contained bank/ERP rows a match already touched, so numerator equalled denominator tautologically on those two sources. | Reported the held-out match rate over the Razorpay side only, where cycle membership is well-defined, and named it accordingly. | The metric became narrower in scope but honestly labelled instead of quietly overstated. |
+| R31 | 16 | The plan's own API code read the biased whole-population field directly — the very next task would have silently reintroduced R30's disowned metric into the API and the dashboard. | Required the API to surface the honestly-scoped field in holdout mode, never the raw biased one. | Dashboard and any judge reading the API would see an overstated match rate. |
+| R32 | 16 | The drill-down endpoint dumped a match's fields directly; the calibrated probability defaults to zero and is only populated in a parallel list one endpoint re-injected and the other didn't — so every drill-down showed a fabricated 0.0 confidence on the exact screen meant to prove the audit trail. | Injected the aligned probability the same way the working endpoint does, pinned with a cross-endpoint agreement test. | The demo's proof-of-audit screen displays a fabricated confidence. |
+| R33 | 16 | The audit ledger recorded the disowned biased match rate even after the API stopped surfacing it — writing a number already disowned into the permanent record. | The ledger entry now records the honestly-scoped rate and labels which evaluation mode produced it. | None — the audit trail becomes more precise. |
+| R34 | 16/17 | *Not recovered — see note at the end of this log.* | | |
+
+</details>
+
+<details>
+<summary><strong>Chaos suite — Task 18 (R35–R36)</strong></summary>
+
+| Id | Task | Finding | Decision | Cost if wrong |
+|---|---|---|---|---|
+| R35 | 18 | A rewritten duplicate-UTR test tracked overlap on the wrong two id sets — the actual threat (one Razorpay row claimed by two *different* bank rows sharing a UTR) produced no overlap on the sets being checked, and passed silently. | Unioned the shared id into each axis's seen-set, checked independently; verified by constructing the exact failure and watching the assertion fire. | None. |
+| R36 | 18 | The new degraded-flag fix had no negative test — nothing asserted the flag was *absent* on a healthy run. | Added a healthy-client test asserting absence. | None. |
+
+</details>
+
+<details>
+<summary><strong>Submission artifacts — Task 19 (R37–R40)</strong></summary>
+
+| Id | Task | Finding | Decision | Cost if wrong |
+|---|---|---|---|---|
+| R37 | 19 | **Reproducibility bug.** The CLI's default row volume didn't match the generator config's default — the CLI and the evaluation script produced *different datasets* and different headline numbers. The implementer correctly refused to hand-type the controller's supplied figures over their own real generated output. | Made the CLI read its default from the one config the evaluation script also uses; verified an identical result hash between the two entry points. | None — removes a fork rather than adding one. |
+| R38 | 19 | Docker couldn't be run in this environment (no daemon available). | The README's "how to run" leads with the verified CLI path; Docker is documented as an alternative, never claimed as run. | None — an honesty/ordering decision only. |
+| **R39** | 19 | **Critical.** The README stated "none were typed by hand" directly above a results table whose in-sample column and calibration figures *were* hand-copied from earlier drafts — possibly from a different dataset generation entirely. | Made the claim true instead of softening it: extended the evaluation script to run both passes and compute the calibration figures live, then regenerated. | None — one extra pipeline run per evaluation build. |
+| R40 | 19 | A solver sweep table sat unlabelled beside the headline numbers, with one of its rows not matching the current headline figure and no explanation given. | Labelled it as a historical bound-selection artifact, stated when and how it was run, said plainly it isn't regenerated by the evaluation script. | None. |
+
+</details>
+
+<details open>
+<summary><strong>Final whole-branch review — the last gate before submission (R41–R49)</strong></summary>
+
+| Id | Task | Finding | Decision | Cost if wrong |
+|---|---|---|---|---|
+| **R41** | final | **Critical.** The README claimed the model is used "in exactly two places"; a repo-wide search confirmed the narration fallback is never wired in any production path — only one place (the exception desk) is real. | Corrected the claim to one place; described the narration seam as exposed-but-unwired rather than implementing a live path under deadline pressure. | None — makes the claim match the code. |
+| R42 | final | `nostro replay` failed on the README's own documented flow — the close appended to the ledger instead of starting fresh, so two closes (or a model / no-model pair) produced different hashes. | Every close now starts from a fresh ledger file, mirroring what replay already did for its own scratch copy. | An older audit history is discarded per close — correct behaviour for "this close's ledger." |
+| R43 | final | Docker Compose pointed the UI container at the API via `localhost`, which inside a container is the UI container itself. | Fixed to address the API by its service name. | None. |
+| R44 | final | Held-out throughput divided a holdout-restricted row count by the full close's wall-clock time, understating it roughly 3.6× and making it incomparable to the figure shown beside it. | Report throughput once, over the full batch, labelled accordingly. | None — one fewer misleading number. |
+| R45 | final | The drill-down screen showed only the first of a row's two matches — on the one screen meant to prove three-way reconciliation, it showed two-way. | Return every match touching a row, render each with its own probability. | Completed rather than deferred, despite being explicitly optional under time pressure. |
+| R46 | final | The exception list is exhaustive over the union of both matching axes, so a row resolved on one axis but not the other isn't listed even though its reconciliation is incomplete — making the count look inconsistent with recall. | Added one clarifying sentence to the evaluation write-up rather than building a new exception class under deadline. | None — a clarifying sentence only. |
+| **R47** | final | **Correctness.** The auto-post gate fails open under a degraded calibrator: raw scores can hit exactly the ceiling, and the decision rule is inclusive at the boundary, so a pass-through calibrator could auto-post on zero evidence with nothing in the degradation report saying so. | Detect a genuine pass-through directly; force the threshold to post nothing and record the degradation when it fires. | A degraded run posts nothing automatically instead of everything — the safe failure direction for a books system. |
+| R48 | final | Ledger verification crashed with a raw traceback on a corrupted line instead of reporting the break — the single most likely way anyone actually pokes at tamper-evidence live. | Catch the parse failure per line, report it the same way a broken hash chain is already reported. | None. |
+| R49 | final | The test cited *by name* in the README as proof of the R29 fix still only asserted a trivial bound — it would not have caught the bug it's named for. | Strengthened the assertion to check the actual signature of the fixed bug. | None. |
+
+</details>
+
+**On R15 and R34.** Two ruling numbers exist in the sequence with no
+recoverable detail. The live ledger these were written to lived outside the
+git repository by design — it was scratch space, cleaned up at the end of
+the build per the standard process for finishing a development branch. That
+cleanup should have happened *after* every ruling was extracted into a
+permanent record; here it happened one step too early. Reconstructing
+precise wording for those two from memory risked misattributing a decision
+or its reasoning — exactly the failure mode this log exists to prevent — so
+they're marked as gaps instead of guesses. The corresponding code changes
+are real and are in the commit history; only this log's account of *why* is
+incomplete for those two.
