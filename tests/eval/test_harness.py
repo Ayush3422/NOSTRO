@@ -88,6 +88,18 @@ def test_throughput_is_reported():
     assert report.rows_per_second == 2.0      # 4 rows / 2.0 s
 
 
+def test_throughput_uses_total_rows_when_given_not_the_scored_population():
+    """R44: when `cset` is a holdout-restricted population, throughput must
+    still be computed over the full close's row count, not the restricted
+    one, or it silently understates real throughput and stops being
+    comparable to a non-restricted figure shown beside it."""
+    links = [GroundTruthLink(link_id="g1", razorpay_ids=("pay_1",), bank_ids=("bk_1",))]
+    report = evaluate([_match("m1", ["pay_1"], ["bk_1"])], links, _cset(), 2.0,
+                      total_rows=5982)
+    assert report.rows_per_second == 5982 / 2.0
+    assert report.rows_evaluated == 4          # the scored population is unaffected
+
+
 def test_ground_truth_round_trips_from_disk(tmp_path: Path):
     p = tmp_path / "gt.json"
     p.write_text(json.dumps([{"link_id": "g1", "razorpay_ids": ["pay_1"],

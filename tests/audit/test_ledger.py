@@ -85,6 +85,27 @@ def test_entries_reload_from_disk(tmp_path: Path):
     assert [e.kind for e in reloaded] == ["one", "two"]
 
 
+def test_a_corrupted_line_is_reported_not_raised(tmp_path: Path):
+    """R48: entries()/verify() must not let a hand-corrupted line raise a raw
+    exception out of `nostro verify` or 500 out of /api/close/audit -- it
+    must come back as (False, position), the same as a broken hash chain."""
+    led = _ledger(tmp_path)
+    for i in range(5):
+        led.append("match_posted", {"i": i})
+    path = tmp_path / "audit.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[2] = "not json at all {{{"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    ledger = Ledger(path)
+    entries = ledger.entries()          # must not raise
+    assert len(entries) == 5
+
+    ok, bad = ledger.verify()           # must not raise
+    assert ok is False
+    assert bad == 2
+
+
 def test_tail_truncation_is_NOT_detected_unsigned_chain_limitation(tmp_path: Path):
     # This pins a known limitation, not a bug. An unsigned hash chain cannot
     # tell "the last N entries were erased" apart from "the ledger was always

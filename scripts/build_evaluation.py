@@ -99,8 +99,6 @@ lines = [
     f"| precision | {r.precision:.4f} | {r_in.precision:.4f} |" if r and r_in else "| precision | n/a | n/a |",
     f"| recall | {r.recall:.4f} | {r_in.recall:.4f} |" if r and r_in else "| recall | n/a | n/a |",
     f"| F1 | {r.f1:.4f} | {r_in.f1:.4f} |" if r and r_in else "| F1 | n/a | n/a |",
-    f"| throughput | {r.rows_per_second:,.0f} rows/s | {r_in.rows_per_second:,.0f} rows/s |"
-        if r and r_in else "| throughput | n/a | n/a |",
     f"| matches | {len(result.matches):,} | {len(result_in_sample.matches):,} |",
     f"| exceptions | {len(result.exceptions):,} | {len(result_in_sample.exceptions):,} |",
     f"| quarantined at ingest | {result.quarantined_count} | {result_in_sample.quarantined_count} |",
@@ -112,6 +110,13 @@ lines = [
     "restricted to the razorpay side, where cycle membership is well-defined;",
     "the in-sample figure is the ordinary whole-population match rate. They",
     "are not directly comparable, which is why each is labelled.",
+    "",
+    f"**Throughput (full-batch): {r.rows_per_second:,.0f} rows/s.** Measured over "
+        "every row the close processes end to end, not the held-out-restricted "
+        "row count — splitting it into held-out/in-sample columns like the "
+        "metrics above doesn't mean anything here, since matching runs once "
+        "over the full dataset regardless of which population is later scored "
+        "for accuracy." if r else "**Throughput (full-batch): n/a.**",
     "",
     "## Auto-post threshold (held-out run)",
     "",
@@ -172,6 +177,13 @@ for item in result.exceptions:
 
 lines += ["", "## The honest exception list (held-out run)", "",
           "Every row not consumed by a match appears here. Nothing is dropped.", "",
+          "This list enumerates rows unmatched on **every** axis: a Razorpay "
+          "payment matched to its ERP invoice but never reconciled to a bank "
+          "credit (or vice versa) counts toward recall as a partial match, but "
+          "does not appear here, because half its reconciliation is still "
+          "unresolved rather than fully absent. That is why this count and "
+          "the recall figure above do not arithmetically reconcile against "
+          "each other — they answer different questions.", "",
           "| class | count | value |", "|---|---|---|"]
 lines += [f"| {k} | {v} | Rs {paise_to_rupees(by_class_amount[k])} |"
           for k, v in sorted(by_class.items(), key=lambda kv: -kv[1])]

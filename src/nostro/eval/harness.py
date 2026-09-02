@@ -29,11 +29,6 @@ class EvalReport(BaseModel):
     elapsed_seconds: float
     rows_per_second: float
 
-    def as_markdown_row(self, label: str) -> str:
-        return (f"| {label} | {self.precision:.4f} | {self.recall:.4f} | "
-                f"{self.f1:.4f} | {self.match_rate:.4f} | {self.rows_evaluated} | "
-                f"{self.rows_per_second:,.0f} |")
-
 
 def load_ground_truth(path: Path) -> list[GroundTruthLink]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -57,7 +52,17 @@ def evaluate(
     links: list[GroundTruthLink],
     cset: CanonicalSet,
     elapsed_seconds: float,
+    total_rows: int | None = None,
 ) -> EvalReport:
+    """`total_rows`, when given, is the row count the close actually processed
+    end to end (e.g. the full dataset, even when `cset`/`matches` here are
+    restricted to a held-out population for precision/recall/F1). Throughput
+    is a property of the close's wall-clock work, not of whichever population
+    is being scored for accuracy, so `rows_per_second` is always computed
+    against `total_rows` when it's supplied -- never against the (possibly
+    much smaller) evaluated-population row count. Omit it to fall back to
+    `len(all_ids)` from `cset`, e.g. when `cset` already IS the full
+    population (no holdout split configured)."""
     predicted: set[tuple[str, str]] = set()
     for match in matches:
         predicted |= match.pairs()
@@ -80,6 +85,7 @@ def evaluate(
     matched_rows = touched & all_ids
 
     rows = len(all_ids)
+    throughput_rows = total_rows if total_rows is not None else rows
     return EvalReport(
         precision=precision, recall=recall, f1=f1,
         match_rate=len(matched_rows) / rows if rows else 0.0,
@@ -87,5 +93,5 @@ def evaluate(
         rows_evaluated=rows,
         unmatched_row_ids=sorted(all_ids - matched_rows),
         elapsed_seconds=elapsed_seconds,
-        rows_per_second=(rows / elapsed_seconds) if elapsed_seconds > 0 else 0.0,
+        rows_per_second=(throughput_rows / elapsed_seconds) if elapsed_seconds > 0 else 0.0,
     )

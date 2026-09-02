@@ -20,7 +20,7 @@ export default async function Page() {
     ["Recall", pct(s.recall)],
     ["F1", s.f1 === null || s.f1 === undefined ? "—" : s.f1.toFixed(4)],
     ["Rows", s.rows.toLocaleString("en-IN")],
-    ["Throughput", s.rows_per_second ? `${Math.round(s.rows_per_second).toLocaleString("en-IN")}/s` : "—"],
+    ["Throughput (full-batch)", s.rows_per_second ? `${Math.round(s.rows_per_second).toLocaleString("en-IN")}/s` : "—"],
     ["Auto-posted", `${s.auto_posted} at τ=${s.tau.toFixed(3)}`],
     ["Exceptions", s.exceptions.toLocaleString("en-IN")],
   ];

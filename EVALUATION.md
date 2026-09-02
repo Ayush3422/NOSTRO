@@ -24,7 +24,6 @@ the honest gap between them visible, not to headline it.
 | precision | 0.9937 | 0.9905 |
 | recall | 0.6894 | 0.6874 |
 | F1 | 0.8140 | 0.8116 |
-| throughput | 347 rows/s | 1,262 rows/s |
 | matches | 3,126 | 3,126 |
 | exceptions | 541 | 541 |
 | quarantined at ingest | 0 | 0 |
@@ -36,6 +35,8 @@ match rate on that side tautologically ~100%. The held-out figure is
 restricted to the razorpay side, where cycle membership is well-defined;
 the in-sample figure is the ordinary whole-population match rate. They
 are not directly comparable, which is why each is labelled.
+
+**Throughput (full-batch): 994 rows/s.** Measured over every row the close processes end to end, not the held-out-restricted row count — splitting it into held-out/in-sample columns like the metrics above doesn't mean anything here, since matching runs once over the full dataset regardless of which population is later scored for accuracy.
 
 ## Auto-post threshold (held-out run)
 
@@ -77,6 +78,8 @@ Brier number is not.
 ## The honest exception list (held-out run)
 
 Every row not consumed by a match appears here. Nothing is dropped.
+
+This list enumerates rows unmatched on **every** axis: a Razorpay payment matched to its ERP invoice but never reconciled to a bank credit (or vice versa) counts toward recall as a partial match, but does not appear here, because half its reconciliation is still unresolved rather than fully absent. That is why this count and the recall figure above do not arithmetically reconcile against each other — they answer different questions.
 
 | class | count | value |
 |---|---|---|

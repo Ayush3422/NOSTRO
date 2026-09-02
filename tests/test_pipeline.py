@@ -74,6 +74,25 @@ def test_subset_sum_lifts_recall_above_the_deterministic_floor(tmp_path: Path):
     assert run_close(full).report.recall > run_close(base).report.recall
 
 
+def test_two_consecutive_closes_on_the_same_audit_path_do_not_double_up(tmp_path: Path):
+    """R42: run_close must start from a fresh ledger at audit_path each time,
+    or two closes on the same path chain entries instead of replacing them --
+    which is exactly what broke `nostro close` followed by `nostro replay` on
+    the README's own documented flow (replay writes to a different scratch
+    path, so the mismatch only showed up on a second real close)."""
+    ds = _dataset(tmp_path)
+    audit = tmp_path / "audit.jsonl"
+    first = run_close(CloseConfig(data_dir=ds.razorpay_csv.parent, audit_path=audit,
+                                  holdout_cycles=ds.holdout_cycles, use_model=False))
+    from nostro.audit.ledger import Ledger
+    count_after_first = len(Ledger(audit).entries())
+    second = run_close(CloseConfig(data_dir=ds.razorpay_csv.parent, audit_path=audit,
+                                   holdout_cycles=ds.holdout_cycles, use_model=False))
+    count_after_second = len(Ledger(audit).entries())
+    assert count_after_second == count_after_first  # not doubled
+    assert first.result_hash == second.result_hash
+
+
 def test_calibrator_never_sees_holdout_labels(tmp_path: Path):
     """Controller override 1: fitting must be blind to holdout ground truth.
 
@@ -93,6 +112,32 @@ def test_calibrator_never_sees_holdout_labels(tmp_path: Path):
                                    holdout_cycles=every_cycle,
                                    use_model=False))
     assert "calibration" in result.degraded
+    assert result.auto_posted == 0  # R47: no evidence, so nothing auto-posts
+
+
+def test_calibration_pass_through_never_auto_posts(tmp_path: Path, monkeypatch):
+    """R47: raw_score maxes at exactly 1.0 (a perfect EXACT match) and decide()
+    uses >=, so if Calibrator.fit ever stays a pass-through (e.g. a train split
+    with only one label class), every top-scoring EXACT match would auto-post
+    on an uncalibrated heuristic with zero labelled evidence behind it. Force
+    that pass-through here (rather than trying to engineer a real single-class
+    dataset) and assert the gate refuses to post anything and reports the run
+    as degraded.
+    """
+    from nostro.match.calibrate import Calibrator
+
+    def _stay_pass_through(self, scores, labels):
+        return self  # self._model stays None, exactly like the real fallback
+
+    monkeypatch.setattr(Calibrator, "fit", _stay_pass_through)
+
+    ds = _dataset(tmp_path)
+    result = run_close(CloseConfig(data_dir=ds.razorpay_csv.parent,
+                                   audit_path=tmp_path / "audit.jsonl",
+                                   holdout_cycles=ds.holdout_cycles,
+                                   use_model=False))
+    assert "calibration" in result.degraded
+    assert result.auto_posted == 0
 
 
 def test_holdout_report_differs_in_kind_from_all_links_report(tmp_path: Path):
@@ -286,16 +331,30 @@ def test_tau_uses_only_train_cycle_predictions(tmp_path: Path):
     `fit`/`choose_tau` mislabelled as 0 purely because their truth lives in
     holdout links, which is enough with this cost model (Rs 2,500 wrong-post
     vs Rs 50 review) to push tau to 1.0 / auto_posted to 0 as an artifact,
-    not a risk judgement. This does not assert a specific tau (that is a
-    real modelling outcome, not a contract) -- only that fitting used a
-    population consistent with `_restrict_to_train`, which is checked
-    directly in the two tests above. This test exists to document the
-    expectation and catch a gross regression back to the old behaviour.
+    not a risk judgement -- the fabricated-finding incident the README cites
+    this test BY NAME for. `0.0 <= tau <= 1.0` alone would not have caught
+    that: tau=1.0 satisfies it trivially. Assert the actual signature of the
+    bug instead -- on this real dataset fixture, a correctly-restricted train
+    population produces a tau strictly below 1.0 and posts something
+    automatically; the old, mislabelled-as-0 population collapsed to exactly
+    tau=1.0 / auto_posted=0.
+
+    Uses a larger dataset than the module's usual `_dataset()` fixture: at
+    that small size (cycles=8, payments_per_cycle=12) this dataset's holdout
+    split happens to leave train with only positive labels, which correctly
+    degrades calibration (see R47) and makes tau=1.0 the honest, intended
+    answer -- not the bug this test exists to pin. A size that reliably
+    produces both label classes in train is needed to make `tau < 1.0` a
+    meaningful assertion about the fabrication bug rather than a coincidence
+    of a too-small fixture.
     """
-    ds = _dataset(tmp_path)
+    cfg = GeneratorConfig(cycles=20, payments_per_cycle=60)
+    ds = generate(cfg, tmp_path / "data")
     result = run_close(CloseConfig(data_dir=ds.razorpay_csv.parent,
                                    audit_path=tmp_path / "audit.jsonl",
                                    holdout_cycles=ds.holdout_cycles,
                                    use_model=False))
     assert result.threshold is not None
-    assert 0.0 <= result.threshold.tau <= 1.0
+    assert "calibration" not in result.degraded  # a genuine fit, not a pass-through
+    assert result.threshold.tau < 1.0
+    assert result.auto_posted > 0

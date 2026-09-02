@@ -55,7 +55,9 @@ def _ordered(candidates: list[CanonicalRow], limit: int) -> list[CanonicalRow]:
 def find_subset(
     target_paise: int, candidates: list[CanonicalRow], cfg: SolverConfig
 ) -> tuple[tuple[str, ...], int] | None:
-    """Smallest subset whose sum is within tolerance of target. None if none fits."""
+    """Best subset whose sum is within tolerance of target, ranked by
+    (residual, size, ids) -- smallest residual wins first, subset size only
+    breaks ties. None if none fits."""
     pool = _ordered(candidates, cfg.max_candidates)
     amounts = [r.amount_paise for r in pool]
     n = len(pool)

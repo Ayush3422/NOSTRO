@@ -49,11 +49,23 @@ class Ledger:
     def entries(self) -> list[LedgerEntry]:
         if not self.path.exists():
             return []
-        return [
-            LedgerEntry(**json.loads(line))
-            for line in self.path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        out = []
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                out.append(LedgerEntry(**json.loads(line)))
+            except (json.JSONDecodeError, ValueError, TypeError):
+                # A corrupted line (hand-edited garbage, a truncated write) must
+                # not crash the caller -- `verify()` needs to see this as "the
+                # chain broke here" and report it, the same as a bad hash. A
+                # sentinel with a seq that can never match its position (-1)
+                # guarantees verify()'s seq/position check trips on this entry.
+                out.append(LedgerEntry(
+                    seq=-1, ts="", kind="__corrupt__", payload={},
+                    prev_hash="", entry_hash="",
+                ))
+        return out
 
     def append(self, kind: str, payload: dict) -> LedgerEntry:
         existing = self.entries()

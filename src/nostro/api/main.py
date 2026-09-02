@@ -140,32 +140,40 @@ def build_app(
         found = cset.by_id().get(row_id)
         if found is None:
             raise HTTPException(status_code=404, detail=f"unknown row {row_id}")
-        match_index = next(
-            (i for i, m in enumerate(result.matches)
-             if row_id in (*m.razorpay_ids, *m.bank_ids, *m.erp_ids)), None)
-        match = result.matches[match_index] if match_index is not None else None
-        item = next((e for e in result.exceptions if row_id in e.row_ids), None)
-        siblings = []
-        match_payload = None
-        if match is not None:
+        # A row can legitimately appear in TWO matches under per-axis
+        # consumption -- one ERP-axis match and one bank-axis match for the
+        # same Razorpay payment -- because the deterministic pass runs each
+        # axis with its own consumed-row set. Taking only the first match
+        # (via next()/enumerate()) silently hid the bank-axis leg on every
+        # such row, since the ERP-axis pass always runs first. Return every
+        # match touching this row, not just one. See R45.
+        index = cset.by_id()
+        match_payloads = []
+        all_siblings: dict[str, dict] = {}
+        for i, m in enumerate(result.matches):
+            if row_id not in (*m.razorpay_ids, *m.bank_ids, *m.erp_ids):
+                continue
             # `Match.probability` defaults to 0.0 and is never populated by
             # run_close -- the real calibrated value lives in the parallel
             # `result.probabilities` list, aligned by index to `result.matches`.
             # Inject it the same way `matches()` does, so the two endpoints
             # never disagree about a match's confidence.
-            match_payload = {
-                **match.model_dump(mode="json"),
-                "probability": result.probabilities[match_index],
-            }
-            index = cset.by_id()
-            siblings = [
-                index[rid].model_dump(mode="json")
-                for rid in (*match.razorpay_ids, *match.bank_ids, *match.erp_ids)
-                if rid in index and rid != row_id
-            ]
+            match_payloads.append({
+                **m.model_dump(mode="json"),
+                "probability": result.probabilities[i],
+            })
+            for rid in (*m.razorpay_ids, *m.bank_ids, *m.erp_ids):
+                if rid in index and rid != row_id and rid not in all_siblings:
+                    all_siblings[rid] = index[rid].model_dump(mode="json")
+        item = next((e for e in result.exceptions if row_id in e.row_ids), None)
+        siblings = list(all_siblings.values())
         return {
             "row": found.model_dump(mode="json"),
-            "match": match_payload,
+            "matches": match_payloads,
+            # Deprecated alias: the first match, or null. Kept only so an
+            # older client reading a single `match` field does not break
+            # outright; new callers should read `matches`.
+            "match": match_payloads[0] if match_payloads else None,
             "exception": item.model_dump(mode="json") if item else None,
             "siblings": siblings,
         }

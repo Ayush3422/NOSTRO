@@ -49,6 +49,14 @@ class Calibrator:
         self._model = model
         return self
 
+    @property
+    def is_fitted(self) -> bool:
+        """False when `fit` stayed a pass-through (no scores, or a single label
+        class -- e.g. an all-correct or all-wrong train split). Callers must not
+        trust `predict` output as calibrated probabilities when this is False;
+        it is returning raw, clipped scores instead."""
+        return self._model is not None
+
     def predict(self, scores: list[float]) -> list[float]:
         if self._model is None:
             return [max(0.0, min(1.0, s)) for s in scores]

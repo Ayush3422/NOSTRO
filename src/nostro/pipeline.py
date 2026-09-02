@@ -176,6 +176,14 @@ def _restrict_to_train(
 def run_close(cfg: CloseConfig, client=None) -> CloseResult:
     started = perf_counter()
     degraded: list[str] = []
+    # Start every close from a fresh ledger at audit_path: Ledger.append is a
+    # pure append, so without this a second close on the same path would chain
+    # onto the first close's entries instead of replacing them, doubling the
+    # entry count and changing result_hash run over run even with identical
+    # inputs. Mirrors what replay_cmd already does for its own scratch file.
+    # See R42.
+    if cfg.audit_path.exists():
+        cfg.audit_path.unlink()
     ledger = Ledger(cfg.audit_path)
     ledger.append("close_started", {"data_dir": str(cfg.data_dir)})
 
@@ -241,16 +249,38 @@ def run_close(cfg: CloseConfig, client=None) -> CloseResult:
         calibrator = Calibrator().fit(train_scores, train_labels)
         probabilities = calibrator.predict(scores)          # applied to every match
         train_probabilities = calibrator.predict(train_scores)
-        threshold = choose_tau(train_probabilities, train_labels, cfg.costs)
+        if calibrator.is_fitted:
+            threshold = choose_tau(train_probabilities, train_labels, cfg.costs)
+        else:
+            # fit() stayed a pass-through (e.g. train labels are a single
+            # class), so `probabilities` above are raw, uncalibrated scores --
+            # there is zero labelled evidence behind them. Auto-posting on a
+            # raw heuristic score is exactly the failure this gate exists to
+            # prevent, so refuse to post anything this run rather than let an
+            # uncalibrated score decide. See R47.
+            degraded.append("calibration")
+            threshold = ThresholdChoice(
+                tau=1.0, expected_cost_paise=0, auto_post_count=0,
+                precision_at_tau=0.0, curve=[],
+            )
     else:
         degraded.append("calibration")
         probabilities = scores
         threshold = choose_tau([], [], cfg.costs)
         train_scores, train_labels, train_probabilities = [], [], []
 
-    auto_posted = sum(
-        1 for p in probabilities if decide(p, threshold.tau) is Decision.AUTO_POST
-    )
+    if "calibration" in degraded:
+        # Belt-and-braces on top of tau=1.0: raw_score's own ceiling is
+        # exactly 1.0 (a perfect EXACT match), so `decide(p, 1.0)` would still
+        # AUTO_POST via its `>=` on that one score. When calibration is
+        # degraded there is no labelled evidence behind ANY probability here
+        # -- posting nothing is the only safe outcome, so compute it directly
+        # rather than trust a tau comparison against raw scores. See R47.
+        auto_posted = 0
+    else:
+        auto_posted = sum(
+            1 for p in probabilities if decide(p, threshold.tau) is Decision.AUTO_POST
+        )
     ledger.append("threshold_chosen", {
         "tau": threshold.tau, "auto_posted": auto_posted,
         "expected_cost_paise": threshold.expected_cost_paise,
@@ -304,7 +334,17 @@ def run_close(cfg: CloseConfig, client=None) -> CloseResult:
         eval_matches, eval_cset = matches, cset
         eval_links = links      # explicit fallback: no holdout split configured
         holdout_razorpay_match_rate = None
-    report = evaluate(eval_matches, eval_links, eval_cset, elapsed) if eval_links else None
+    # Throughput is full-batch always: the close processes every row in `cset`
+    # regardless of holdout scoping, so `total_rows` here is deliberately the
+    # UNRESTRICTED row count, not `len(eval_cset...)`. Dividing the holdout-
+    # restricted row count by the full close's wall-clock time (as this used
+    # to do) understated throughput by ~3.6x and wasn't comparable to the
+    # in-sample figure shown beside it. See R44.
+    total_rows = len(cset.razorpay) + len(cset.bank) + len(cset.erp)
+    report = (
+        evaluate(eval_matches, eval_links, eval_cset, elapsed, total_rows=total_rows)
+        if eval_links else None
+    )
     if report is not None:
         # Never write the whole-population match_rate into the permanent record
         # when it is the biased holdout figure (see CloseResult's docstring on

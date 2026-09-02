@@ -81,7 +81,8 @@ def test_drill_down_resolves_a_real_row(client):
     row_id = (match["razorpay_ids"] + match["bank_ids"] + match["erp_ids"])[0]
     body = client.get(f"/api/close/row/{row_id}").json()
     assert body["row"]["row_id"] == row_id
-    assert body["match"] is not None
+    assert body["matches"]
+    assert body["match"] is not None  # deprecated alias, kept for old clients
 
 
 def test_drill_down_on_an_unknown_row_is_a_404(client):
@@ -97,8 +98,25 @@ def test_drill_down_probability_agrees_with_the_matches_endpoint(client):
     listed = client.get("/api/close/matches?limit=1").json()["items"][0]
     row_id = (listed["razorpay_ids"] + listed["bank_ids"] + listed["erp_ids"])[0]
     body = client.get(f"/api/close/row/{row_id}").json()
-    assert body["match"]["match_id"] == listed["match_id"]
-    assert body["match"]["probability"] == listed["probability"]
+    match = next(m for m in body["matches"] if m["match_id"] == listed["match_id"])
+    assert match["probability"] == listed["probability"]
+
+
+def test_drill_down_returns_every_match_touching_a_row(client):
+    """R45: under per-axis consumption a row can legitimately be in two
+    matches (one ERP-axis, one bank-axis). The endpoint must not silently
+    drop the second one by returning only the first match found."""
+    body_all = client.get("/api/close/matches?limit=500").json()["items"]
+    counts: dict[str, int] = {}
+    for m in body_all:
+        for rid in (*m["razorpay_ids"], *m["bank_ids"], *m["erp_ids"]):
+            counts[rid] = counts.get(rid, 0) + 1
+    multi = [rid for rid, c in counts.items() if c > 1]
+    if not multi:
+        return  # nothing in this dataset exercises the two-match case
+    row_id = multi[0]
+    body = client.get(f"/api/close/row/{row_id}").json()
+    assert len(body["matches"]) == counts[row_id]
 
 
 def test_threshold_returns_the_curve(client):

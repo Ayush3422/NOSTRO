@@ -38,10 +38,12 @@ review — both are **stated assumptions, not measurements**; nothing about them
 was benchmarked against a real merchant, and changing them moves τ.
 
 **Narration parsing:** 1,191 of 1,328 bank narrations (89.7%) parse under a
-deterministic regex ladder with no model attached; 137 (10.3%) don't and are the
-only rows where an LLM is ever consulted at all.
+deterministic regex ladder with no model attached; 137 (10.3%) don't and fall
+through to the parser's `llm_fallback` injection point, which is unwired in
+this build (see below) — those rows are simply left unparsed, not sent to a
+live model.
 
-**167 tests passing** (`python -m pytest -v`).
+**172 tests passing** (`python -m pytest -v`).
 
 Full breakdown — exception list by class with rupee values, reproducibility
 hash, degraded-capability list — is in [`EVALUATION.md`](./EVALUATION.md).
@@ -72,15 +74,22 @@ Three decisions in this build use no model at all, on purpose:
   model adds latency and non-determinism to a decision a handful of `if`
   statements already makes correctly.
 
-The model appears in exactly **two** places, both downstream of every number
-above: parsing the ~10% of bank narrations the regex ladder can't (the
-`NarrationParser` LLM fallback), and drafting a proposed resolution for a
-human to approve at the exception desk (`src/nostro/exceptions/agent.py` —
-`requires_human` is hard-coded `True` on every proposal; the desk cannot post,
-move money, or change a classification). Turn the model off entirely
-(`use_model=False` / `nostro close --no-model`) and precision, recall, and the
-exception count do not move. `tests/chaos/test_chaos.py::test_model_outage_still_closes_the_books`
+The model is wired in exactly **one** place in this build, downstream of every
+number above: drafting a proposed resolution for a human to approve at the
+exception desk (`src/nostro/exceptions/agent.py` — `requires_human` is
+hard-coded `True` on every proposal; the desk cannot post, move money, or
+change a classification). Turn the model off entirely (`use_model=False` /
+`nostro close --no-model`) and precision, recall, and the exception count do
+not move. `tests/chaos/test_chaos.py::test_model_outage_still_closes_the_books`
 asserts exactly that, byte-for-byte, with the model dead mid-close.
+
+`NarrationParser` also exposes an `llm_fallback` injection point for the
+~10% of bank narrations the regex ladder can't parse, and the chaos suite
+exercises it against a stub to prove the seam behaves under model outage
+and schema drift. Nothing in this build's production code path
+(`pipeline.py`, `api/main.py`, `normalize/canonical.py`, `scripts/`) wires
+that parameter to a live model — narration parsing today is regex-only.
+The seam is deliberate design-for-it, not a claim that it's active.
 
 One more deliberate non-choice: the spec named the Claude Agent SDK. We used
 the plain Anthropic SDK's structured outputs (`client.messages.parse`) instead,
@@ -144,9 +153,12 @@ train-fitting side and the holdout-evaluation side
 
 Chaos suite, run against a smaller 20-cycle / 40-payment-per-cycle dataset for
 speed (`scripts/chaos_report.py`), reflects the system under active stress
-rather than an idealised close:
+rather than an idealised close. Its metrics are measured **in-sample**, not
+held-out — that is why its baseline recall (79.74%) sits well above this
+README's held-out headline (68.94%) rather than lining up with it; the two
+are different measurement bases, not a contradiction:
 
-| scenario | match rate | precision | recall | exceptions |
+| scenario | match rate (in-sample) | precision (in-sample) | recall (in-sample) | exceptions |
 |---|---|---|---|---|
 | baseline | 93.61% | 96.36% | 79.74% | 138 |
 | narration destroyed | 93.57% | 99.62% | 81.00% | 138 |

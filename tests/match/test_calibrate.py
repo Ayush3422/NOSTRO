@@ -69,3 +69,10 @@ def test_label_is_one_only_when_every_asserted_pair_is_true():
 def test_fit_with_fewer_than_two_distinct_labels_stays_pass_through():
     cal = Calibrator().fit([0.1, 0.5, 0.9], [1, 1, 1])
     assert cal.predict([0.3]) == [0.3]
+    assert cal.is_fitted is False  # callers must be able to detect this -- R47
+
+
+def test_a_normal_fit_reports_is_fitted():
+    scores, labels = _synthetic()
+    cal = Calibrator().fit(scores, labels)
+    assert cal.is_fitted is True

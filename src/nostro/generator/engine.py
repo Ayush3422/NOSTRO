@@ -56,8 +56,10 @@ _BASE_DATE = date(2026, 6, 1)
 
 
 def _fee_split(gross_paise: int, cfg: GeneratorConfig, drift: int) -> tuple[int, int, int]:
-    """Fee and GST in Decimal, floored to paise. `drift` injects the plus/minus
-    one paise disagreement real gateways and ERPs exhibit against each other."""
+    """Fee and GST in Decimal, rounded to the nearest paise (banker's rounding,
+    `Decimal.to_integral_value()`'s default ROUND_HALF_EVEN). `drift` injects
+    the plus/minus one paise disagreement real gateways and ERPs exhibit
+    against each other."""
     fee = int((Decimal(gross_paise) * cfg.fee_bps / 10000).to_integral_value())
     gst = int((Decimal(fee) * cfg.gst_bps / 10000).to_integral_value())
     fee += drift
